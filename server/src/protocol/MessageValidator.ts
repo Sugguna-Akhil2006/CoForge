@@ -61,6 +61,11 @@ export class MessageValidator {
                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
                        typeof payload.path === 'string' && payload.path.trim() !== '' &&
                        typeof payload.content === 'string';
+            case MessageType.FILE_RENAMED:
+                return this.isObject(payload) &&
+                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
+                       typeof payload.oldPath === 'string' && payload.oldPath.trim() !== '' &&
+                       typeof payload.newPath === 'string' && payload.newPath.trim() !== '';
             case MessageType.ERROR:
                 return this.isObject(payload) && 
                        typeof payload.code === 'string' && payload.code.trim() !== '' &&

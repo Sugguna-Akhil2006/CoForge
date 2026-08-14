@@ -100,6 +100,7 @@ class CollaborationServer {
                 case MessageType.FILE_CREATED:
                 case MessageType.FILE_CHANGED:
                 case MessageType.FILE_DELETED:
+                case MessageType.FILE_RENAMED:
                     this.handleFileSyncEvent(ws, message);
                     break;
                 default:
@@ -268,7 +269,9 @@ class CollaborationServer {
     private handleFileSyncEvent(ws: WebSocket, message: Message): void {
         const payload = message.payload as any;
         const sessionId = payload.sessionId;
-        const path = payload.path;
+        const pathStr = message.type === MessageType.FILE_RENAMED 
+            ? `${payload.oldPath} -> ${payload.newPath}` 
+            : payload.path;
 
         try {
             const session = this.sessionRegistry.getSession(sessionId);
@@ -277,7 +280,7 @@ class CollaborationServer {
                 return;
             }
 
-            console.log(`[INFO] ${message.type}: ${path}`);
+            console.log(`[INFO] ${message.type}: ${pathStr}`);
 
             // Broadcast to everyone else in the session
             const allClients = session.getClients();

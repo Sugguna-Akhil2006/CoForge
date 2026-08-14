@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ILogger } from '../network/WebSocketClient';
 import { CollaborationClient } from '../network/CollaborationClient';
-import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage } from '../protocol/Message';
+import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage } from '../protocol/Message';
 
 export class WorkspaceSyncService {
     private readonly MAX_FILE_SIZE = 1 * 1024 * 1024; // 1 MB
@@ -14,6 +14,7 @@ export class WorkspaceSyncService {
     private readonly boundOnRemoteFileCreated: (msg: FileCreatedMessage) => void;
     private readonly boundOnRemoteFileChanged: (msg: FileChangedMessage) => void;
     private readonly boundOnRemoteFileDeleted: (msg: FileDeletedMessage) => void;
+    private readonly boundOnRemoteFileRenamed: (msg: FileRenamedMessage) => void;
 
     constructor(
         private readonly sessionId: string,
@@ -23,6 +24,7 @@ export class WorkspaceSyncService {
         this.boundOnRemoteFileCreated = this.onRemoteFileCreated.bind(this);
         this.boundOnRemoteFileChanged = this.onRemoteFileChanged.bind(this);
         this.boundOnRemoteFileDeleted = this.onRemoteFileDeleted.bind(this);
+        this.boundOnRemoteFileRenamed = this.onRemoteFileRenamed.bind(this);
     }
 
     private log(message: string): void {
@@ -58,12 +60,37 @@ export class WorkspaceSyncService {
             await this.handleLocalFileEvent(uri, rootPath, 'DELETE');
         }));
 
+        this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
+            for (const file of event.files) {
+                await this.handleLocalFileRenamed(file.oldUri, file.newUri, rootPath);
+            }
+        }));
+
         // Listen for remote events from the collaboration client
         this.collaborationClient.on('fileCreated', this.boundOnRemoteFileCreated);
         this.collaborationClient.on('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.on('fileDeleted', this.boundOnRemoteFileDeleted);
+        this.collaborationClient.on('fileRenamed', this.boundOnRemoteFileRenamed);
 
         this.log('[INFO] WorkspaceSyncService started.');
+    }
+
+    private async handleLocalFileRenamed(oldUri: vscode.Uri, newUri: vscode.Uri, rootPath: string): Promise<void> {
+        const oldRelativePath = path.relative(rootPath, oldUri.fsPath).replace(/\\/g, '/');
+        const newRelativePath = path.relative(rootPath, newUri.fsPath).replace(/\\/g, '/');
+
+        if (oldRelativePath.includes('.git/') || oldRelativePath.includes('node_modules/') || oldRelativePath.includes('.vscode/') ||
+            newRelativePath.includes('.git/') || newRelativePath.includes('node_modules/') || newRelativePath.includes('.vscode/')) {
+            return;
+        }
+
+        if (this.applyingRemoteChanges.has(oldRelativePath) || this.applyingRemoteChanges.has(newRelativePath)) {
+            this.log(`[DEBUG] Ignoring local RENAME event for ${oldRelativePath} -> ${newRelativePath} (remote apply guard active)`);
+            return;
+        }
+
+        this.log(`[INFO] Local file renamed: ${oldRelativePath} -> ${newRelativePath}`);
+        this.collaborationClient.sendFileRenamed(this.sessionId, oldRelativePath, newRelativePath);
     }
 
     private async handleLocalFileEvent(uri: vscode.Uri, rootPath: string, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
@@ -127,6 +154,51 @@ export class WorkspaceSyncService {
 
     private async onRemoteFileDeleted(message: FileDeletedMessage): Promise<void> {
         await this.applyRemoteFileEvent(message.payload.path, undefined, 'DELETE');
+    }
+
+    private async onRemoteFileRenamed(message: FileRenamedMessage): Promise<void> {
+        await this.applyRemoteFileRenamed(message.payload.oldPath, message.payload.newPath);
+    }
+
+    private async applyRemoteFileRenamed(oldPath: string, newPath: string): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            return;
+        }
+
+        if (oldPath.startsWith('/') || oldPath.includes('../') || oldPath === '..' ||
+            newPath.startsWith('/') || newPath.includes('../') || newPath === '..') {
+            this.log(`[WARN] Skipping unsafe remote rename paths: ${oldPath} -> ${newPath}`);
+            return;
+        }
+
+        const rootUri = workspaceFolders[0].uri;
+        const oldUri = vscode.Uri.joinPath(rootUri, ...oldPath.split('/'));
+        const newUri = vscode.Uri.joinPath(rootUri, ...newPath.split('/'));
+
+        this.applyingRemoteChanges.add(oldPath);
+        this.applyingRemoteChanges.add(newPath);
+
+        try {
+            this.log(`[INFO] Applying remote RENAME: ${oldPath} -> ${newPath}`);
+            
+            const parentParts = newPath.split('/');
+            parentParts.pop();
+            
+            if (parentParts.length > 0) {
+                const parentUri = vscode.Uri.joinPath(rootUri, ...parentParts);
+                await vscode.workspace.fs.createDirectory(parentUri);
+            }
+
+            await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: true });
+        } catch (error) {
+            this.log(`[ERROR] Failed to apply remote RENAME ${oldPath} -> ${newPath}: ${error}`);
+        } finally {
+            setTimeout(() => {
+                this.applyingRemoteChanges.delete(oldPath);
+                this.applyingRemoteChanges.delete(newPath);
+            }, 100);
+        }
     }
 
     private async applyRemoteFileEvent(relativePath: string, content: string | undefined, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
@@ -209,5 +281,6 @@ export class WorkspaceSyncService {
         this.collaborationClient.removeListener('fileCreated', this.boundOnRemoteFileCreated);
         this.collaborationClient.removeListener('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.removeListener('fileDeleted', this.boundOnRemoteFileDeleted);
+        this.collaborationClient.removeListener('fileRenamed', this.boundOnRemoteFileRenamed);
     }
 }

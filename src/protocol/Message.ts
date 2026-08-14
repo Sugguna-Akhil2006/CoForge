@@ -101,6 +101,15 @@ export interface FileDeletedMessage extends BaseMessage {
     };
 }
 
+export interface FileRenamedMessage extends BaseMessage {
+    type: MessageType.FILE_RENAMED;
+    payload: {
+        sessionId: string;
+        oldPath: string;
+        newPath: string;
+    };
+}
+
 export interface ErrorMessage extends BaseMessage {
     type: MessageType.ERROR;
     payload: {
@@ -123,4 +132,5 @@ export type Message =
     | FileCreatedMessage
     | FileChangedMessage
     | FileDeletedMessage
+    | FileRenamedMessage
     | ErrorMessage;

@@ -98,6 +98,9 @@ export class CollaborationClient extends EventEmitter {
             case MessageType.FILE_DELETED:
                 this.emit('fileDeleted', message);
                 break;
+            case MessageType.FILE_RENAMED:
+                this.emit('fileRenamed', message);
+                break;
             case MessageType.ERROR:
                 this.handleError(message as ErrorMessage);
                 break;
@@ -396,6 +399,21 @@ files=${files.length}`);
             this.client.send(msg);
         } catch (error) {
             this.log(`[ERROR] Failed to send FILE_DELETED: ${error}`);
+        }
+    }
+
+    public sendFileRenamed(sessionId: string, oldPath: string, newPath: string): void {
+        const msg: Message = {
+            messageId: crypto.randomUUID(),
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.FILE_RENAMED,
+            payload: { sessionId, oldPath, newPath }
+        };
+        try {
+            this.client.send(msg);
+        } catch (error) {
+            this.log(`[ERROR] Failed to send FILE_RENAMED: ${error}`);
         }
     }
 }

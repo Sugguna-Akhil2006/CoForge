@@ -12,5 +12,6 @@ export enum MessageType {
     FILE_CREATED = 'FILE_CREATED',
     FILE_CHANGED = 'FILE_CHANGED',
     FILE_DELETED = 'FILE_DELETED',
+    FILE_RENAMED = 'FILE_RENAMED',
     ERROR = 'ERROR'
 }
