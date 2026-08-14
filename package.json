@@ -1,0 +1,63 @@
+{
+  "name": "coforge",
+  "displayName": "CoForge",
+  "description": "CoForge Collaboration Extension for VS Code",
+  "version": "1.0.0",
+  "publisher": "coforge",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "coforge.startCollaboration",
+        "title": "CoForge: Start Collaboration"
+      },
+      {
+        "command": "coforge.stopCollaboration",
+        "title": "CoForge: Stop Collaboration"
+      },
+      {
+        "command": "coforge.joinCollaboration",
+        "title": "CoForge: Join Collaboration"
+      },
+      {
+        "command": "coforge.requestWorkspaceSnapshot",
+        "title": "CoForge: Request Workspace Snapshot"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "compile": "npm run esbuild",
+    "watch": "npm run esbuild-watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.15.47",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.2.0",
+    "@types/vscode": "^1.125.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.12",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}
