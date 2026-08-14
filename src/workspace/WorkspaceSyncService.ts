@@ -252,6 +252,23 @@ export class WorkspaceSyncService {
         }
     }
 
+    /**
+     * Adds a remote-apply guard for the given relative path.
+     * While the guard is active, local file system events for this path
+     * will be ignored and NOT sent to the server.
+     * Use this to prevent snapshot application from triggering outbound sync messages.
+     */
+    public addRemoteApplyGuard(relativePath: string): void {
+        this.applyingRemoteChanges.add(relativePath);
+    }
+
+    /**
+     * Removes the remote-apply guard for the given relative path.
+     */
+    public removeRemoteApplyGuard(relativePath: string): void {
+        this.applyingRemoteChanges.delete(relativePath);
+    }
+
     private isLikelyBinary(filePath: string, content: Uint8Array): boolean {
         const ext = path.extname(filePath).toLowerCase();
         const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.exe', '.dll', '.zip', '.tar', '.gz'];

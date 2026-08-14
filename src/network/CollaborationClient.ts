@@ -325,6 +325,11 @@ export class CollaborationClient extends EventEmitter {
     }
 
     public sendWorkspaceSnapshot(sessionId: string, files: Array<{path: string, content: string}>, correlationId: string): void {
+        if (!this.isConnected()) {
+            this.log('[WARN] Cannot send WORKSPACE_SNAPSHOT: not connected.');
+            return;
+        }
+
         const snapshotMsg: Message = {
             messageId: crypto.randomUUID(),
             correlationId,
@@ -358,6 +363,10 @@ files=${files.length}`);
     }
 
     public sendFileCreated(sessionId: string, path: string, content: string): void {
+        if (!this.isConnected()) {
+            this.log('[WARN] Cannot send FILE_CREATED: not connected.');
+            return;
+        }
         const msg: Message = {
             messageId: crypto.randomUUID(),
             protocolVersion: 1,
@@ -373,6 +382,10 @@ files=${files.length}`);
     }
 
     public sendFileChanged(sessionId: string, path: string, content: string): void {
+        if (!this.isConnected()) {
+            this.log('[WARN] Cannot send FILE_CHANGED: not connected.');
+            return;
+        }
         const msg: Message = {
             messageId: crypto.randomUUID(),
             protocolVersion: 1,
@@ -388,6 +401,10 @@ files=${files.length}`);
     }
 
     public sendFileDeleted(sessionId: string, path: string): void {
+        if (!this.isConnected()) {
+            this.log('[WARN] Cannot send FILE_DELETED: not connected.');
+            return;
+        }
         const msg: Message = {
             messageId: crypto.randomUUID(),
             protocolVersion: 1,
@@ -403,6 +420,10 @@ files=${files.length}`);
     }
 
     public sendFileRenamed(sessionId: string, oldPath: string, newPath: string): void {
+        if (!this.isConnected()) {
+            this.log('[WARN] Cannot send FILE_RENAMED: not connected.');
+            return;
+        }
         const msg: Message = {
             messageId: crypto.randomUUID(),
             protocolVersion: 1,

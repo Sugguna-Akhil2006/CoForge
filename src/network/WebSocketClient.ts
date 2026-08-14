@@ -164,6 +164,23 @@ export class WebSocketClient extends EventEmitter {
     }
 
     /**
+     * Forces immediate disconnection and resets internal state to DISCONNECTED.
+     * Unlike disconnect(), this does not wait for a graceful close handshake.
+     * Use this before calling connect() again for reconnection scenarios.
+     */
+    public forceDisconnect(): void {
+        if (this.ws) {
+            try {
+                this.ws.close();
+            } catch {
+                // Ignore errors during forced cleanup
+            }
+            this.cleanup();
+        }
+        this.setState(ConnectionState.DISCONNECTED);
+    }
+
+    /**
      * Disposes the client, closing any active connection and removing event listeners.
      */
     public dispose(): void {

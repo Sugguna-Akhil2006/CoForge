@@ -20,6 +20,14 @@ export class SessionManager {
     private workspaceSnapshot: any; // In-memory snapshot for the guest
     private syncService: WorkspaceSyncService | undefined;
 
+    // Reconnection state
+    private role: 'host' | 'guest' | undefined;
+    private activeSessionId: string | undefined;
+    private isReconnecting = false;
+
+    private static readonly MAX_RECONNECT_ATTEMPTS = 5;
+    private static readonly BASE_RECONNECT_DELAY_MS = 1000;
+
     constructor(
         private readonly logger?: ILogger,
         private readonly createClient: () => CollaborationClient = () => new CollaborationClient(logger),
@@ -97,6 +105,10 @@ export class SessionManager {
             this.currentSession.activate();
             this.log(`Session ${this.currentSession.getId().toString()} is now active.`);
 
+            // Track role and active session ID
+            this.role = 'host';
+            this.activeSessionId = serverSessionId;
+
             // Start live sync service for the host
             this.syncService = new WorkspaceSyncService(serverSessionId, this.collaborationClient, this.logger);
             this.syncService.start();
@@ -111,6 +123,8 @@ export class SessionManager {
                 this.collaborationClient = undefined;
             }
             this.currentSession = undefined;
+            this.role = undefined;
+            this.activeSessionId = undefined;
             
             throw error;
         }
@@ -147,6 +161,10 @@ export class SessionManager {
             this.currentSession.activate();
             this.log(`Joined session ${sessionId} successfully.`);
 
+            // Track role and active session ID
+            this.role = 'guest';
+            this.activeSessionId = sessionId;
+
             // Automatically request snapshot after joining
             this.log('[INFO] Requesting workspace snapshot...');
             try {
@@ -163,6 +181,9 @@ export class SessionManager {
                 if (this.collaborationClient) {
                     this.syncService = new WorkspaceSyncService(sessionId, this.collaborationClient, this.logger);
                     this.syncService.start();
+
+                    // Set up disconnect listener for reconnection (guest only)
+                    this.setupDisconnectHandler();
                 }
             } catch (snapError) {
                 this.log(`[ERROR] Failed to receive/apply workspace snapshot: ${snapError}`);
@@ -172,6 +193,149 @@ export class SessionManager {
             this.log(`Failed to join session: ${error}`);
             throw error;
         }
+    }
+
+    /**
+     * Sets up the disconnect handler for guest reconnection.
+     */
+    private setupDisconnectHandler(): void {
+        if (!this.collaborationClient) {
+            return;
+        }
+
+        this.collaborationClient.on('disconnected', () => {
+            // Only attempt reconnection for guests with an active session
+            if (this.role !== 'guest' || !this.activeSessionId || this.isReconnecting) {
+                return;
+            }
+            this.log('[INFO] Guest disconnected. Will attempt reconnection...');
+            this.attemptReconnect();
+        });
+    }
+
+    /**
+     * Attempts to reconnect a guest to an existing session with limited retries
+     * and exponential backoff.
+     */
+    private async attemptReconnect(): Promise<void> {
+        if (this.isReconnecting) {
+            return;
+        }
+        this.isReconnecting = true;
+
+        const sessionId = this.activeSessionId!;
+
+        // Dispose old sync service to stop file watchers
+        if (this.syncService) {
+            this.syncService.dispose();
+            this.syncService = undefined;
+        }
+
+        for (let attempt = 1; attempt <= SessionManager.MAX_RECONNECT_ATTEMPTS; attempt++) {
+            const delayMs = SessionManager.BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1);
+            this.log(`[INFO] Attempting collaboration reconnect... (attempt ${attempt}/${SessionManager.MAX_RECONNECT_ATTEMPTS}, delay ${delayMs}ms)`);
+
+            await this.delay(delayMs);
+
+            try {
+                // Clean up old client
+                if (this.collaborationClient) {
+                    this.collaborationClient.removeAllListeners();
+                    this.collaborationClient.dispose();
+                    this.collaborationClient = undefined;
+                }
+
+                // Create a fresh client and connect
+                this.collaborationClient = this.createClient();
+                await this.collaborationClient.connect(this.serverUrl);
+                this.log('[INFO] Collaboration reconnect successful.');
+
+                // Rejoin the same session
+                await this.collaborationClient.joinSession(sessionId);
+                this.log(`[INFO] Rejoined session ${sessionId}.`);
+
+                // Request and apply workspace snapshot for resync
+                await this.resyncWorkspace(sessionId);
+
+                // Set up disconnect handler again for future disconnections
+                this.setupDisconnectHandler();
+
+                this.isReconnecting = false;
+                return;
+            } catch (error) {
+                this.log(`[WARN] Reconnect attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`);
+                
+                // Clean up failed client
+                if (this.collaborationClient) {
+                    try {
+                        this.collaborationClient.removeAllListeners();
+                        this.collaborationClient.dispose();
+                    } catch {
+                        // Ignore cleanup errors
+                    }
+                    this.collaborationClient = undefined;
+                }
+            }
+        }
+
+        // All attempts exhausted
+        this.log('[ERROR] All reconnection attempts failed. Session is no longer active.');
+        this.isReconnecting = false;
+        
+        if (this.currentSession) {
+            this.currentSession.fail(new Error('Reconnection failed after maximum attempts.'));
+        }
+        this.currentSession = undefined;
+        this.role = undefined;
+        this.activeSessionId = undefined;
+    }
+
+    /**
+     * Resynchronizes the guest workspace after reconnection by requesting
+     * a fresh workspace snapshot from the host and applying it with
+     * remote-apply guards to prevent echo.
+     */
+    private async resyncWorkspace(sessionId: string): Promise<void> {
+        if (!this.collaborationClient) {
+            throw new Error('Cannot resync: no collaboration client.');
+        }
+
+        this.log('[INFO] Requesting workspace snapshot for resync...');
+        const snapshotMsg = await this.collaborationClient.requestWorkspaceSnapshot(sessionId, 15000);
+        const files: Array<{ path: string; content: string }> = snapshotMsg.payload.files;
+        this.log(`[INFO] Resync snapshot received: ${files.length} files.`);
+
+        // Create the new sync service BEFORE applying snapshot so we can set guards
+        this.syncService = new WorkspaceSyncService(sessionId, this.collaborationClient, this.logger);
+        this.syncService.start();
+
+        // Set remote-apply guards for all snapshot file paths
+        const guardedPaths: string[] = [];
+        for (const file of files) {
+            const relativePath = file.path.replace(/\\/g, '/');
+            this.syncService.addRemoteApplyGuard(relativePath);
+            guardedPaths.push(relativePath);
+        }
+
+        // Apply the snapshot
+        try {
+            const snapshotService = new WorkspaceSnapshotService(this.logger);
+            await snapshotService.applySnapshot(files);
+            this.log('[INFO] Resync snapshot applied successfully.');
+        } finally {
+            // Clear all guards after a brief delay to let file watcher events settle
+            setTimeout(() => {
+                for (const p of guardedPaths) {
+                    if (this.syncService) {
+                        this.syncService.removeRemoteApplyGuard(p);
+                    }
+                }
+            }, 200);
+        }
+    }
+
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**
@@ -215,6 +379,9 @@ export class SessionManager {
             throw error;
         } finally {
             this.currentSession = undefined;
+            this.role = undefined;
+            this.activeSessionId = undefined;
+            this.isReconnecting = false;
             if (this.syncService) {
                 this.syncService.dispose();
                 this.syncService = undefined;
