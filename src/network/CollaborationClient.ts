@@ -93,6 +93,7 @@ export class CollaborationClient extends EventEmitter {
                 this.emit('fileCreated', message);
                 break;
             case MessageType.FILE_CHANGED:
+                this.log(`[TRACE 8] CLIENT B RECEIVED\ntype=FILE_CHANGED\nmessageId=${message.messageId}`);
                 this.emit('fileChanged', message);
                 break;
             case MessageType.FILE_DELETED:
@@ -394,6 +395,7 @@ files=${files.length}`);
             payload: { sessionId, path, content }
         };
         try {
+            this.log(`[TRACE 3] WEBSOCKET SEND\ntype=FILE_CHANGED\nmessageId=${msg.messageId}\nsessionId=${sessionId}\n${JSON.stringify(msg, null, 2)}`);
             this.client.send(msg);
         } catch (error) {
             this.log(`[ERROR] Failed to send FILE_CHANGED: ${error}`);

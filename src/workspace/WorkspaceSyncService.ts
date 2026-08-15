@@ -60,6 +60,28 @@ export class WorkspaceSyncService {
             await this.handleLocalFileEvent(uri, rootPath, 'DELETE');
         }));
 
+        this.disposables.push(vscode.workspace.onDidChangeTextDocument(async (event) => {
+            if (event.document.uri.scheme !== 'file') {
+                return;
+            }
+            const relativePath = path.relative(rootPath, event.document.uri.fsPath).replace(/\\/g, '/');
+            const content = event.document.getText();
+            this.log(`[TRACE 1] onDidChangeTextDocument FIRED\npath=${event.document.uri.fsPath}\ntextLength=${content.length}\nsessionId=${this.sessionId}`);
+
+            // Ignore excluded folders
+            if (relativePath.includes('.git/') || relativePath.includes('node_modules/') || relativePath.includes('.vscode/')) {
+                return;
+            }
+
+            if (this.applyingRemoteChanges.has(relativePath)) {
+                this.log(`[DEBUG] Ignoring local text change event for ${relativePath} (remote apply guard active)`);
+                return;
+            }
+
+            this.log(`[TRACE 2] sendFileChanged CALLED\npath=${relativePath}\ncontentLength=${content.length}\nsessionId=${this.sessionId}`);
+            this.collaborationClient.sendFileChanged(this.sessionId, relativePath, content);
+        }));
+
         this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
             for (const file of event.files) {
                 await this.handleLocalFileRenamed(file.oldUri, file.newUri, rootPath);
@@ -149,6 +171,7 @@ export class WorkspaceSyncService {
     }
 
     private async onRemoteFileChanged(message: FileChangedMessage): Promise<void> {
+        this.log(`[TRACE 9] REMOTE FILE_CHANGED HANDLER\npath=${message.payload.path}\ncontentLength=${message.payload.content.length}`);
         await this.applyRemoteFileEvent(message.payload.path, message.payload.content, 'CHANGE');
     }
 
@@ -228,6 +251,9 @@ export class WorkspaceSyncService {
                 }
             } else {
                 this.log(`[INFO] Applying remote ${eventType}: ${relativePath}`);
+                if (eventType === 'CHANGE') {
+                    this.log(`[TRACE 10] APPLY REMOTE CONTENT\npath=${relativePath}\ncontentLength=${content?.length ?? 0}`);
+                }
                 
                 const parentParts = relativePath.split('/');
                 parentParts.pop();
@@ -240,9 +266,15 @@ export class WorkspaceSyncService {
                 if (content !== undefined) {
                     const encodedContent = new TextEncoder().encode(content);
                     await vscode.workspace.fs.writeFile(fileUri, encodedContent);
+                    if (eventType === 'CHANGE') {
+                        this.log(`[TRACE 10A] APPLY EDIT RESULT\nsuccess=true`);
+                    }
                 }
             }
         } catch (error) {
+            if (eventType === 'CHANGE') {
+                this.log(`[TRACE 10A] APPLY EDIT RESULT\nsuccess=false\nerror=${error}`);
+            }
             this.log(`[ERROR] Failed to apply remote ${eventType} for ${relativePath}: ${error}`);
         } finally {
             // Leave it in the set briefly to ignore the watcher event that will fire

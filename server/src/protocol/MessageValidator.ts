@@ -56,11 +56,32 @@ export class MessageValidator {
                        Array.isArray(payload.files) &&
                        payload.files.every(f => this.isObject(f) && typeof f.path === 'string' && typeof f.content === 'string');
             case MessageType.FILE_CREATED:
-            case MessageType.FILE_CHANGED:
-                return this.isObject(payload) &&
-                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
-                       typeof payload.path === 'string' && payload.path.trim() !== '' &&
-                       typeof payload.content === 'string';
+            case MessageType.FILE_CHANGED: {
+                let valid = true;
+                let reason = '';
+                
+                if (!this.isObject(payload)) {
+                    valid = false;
+                    reason = 'payload is not an object';
+                } else if (typeof payload.sessionId !== 'string' || payload.sessionId.trim() === '') {
+                    valid = false;
+                    reason = 'sessionId is missing or empty';
+                } else if (typeof payload.path !== 'string' || payload.path.trim() === '') {
+                    valid = false;
+                    reason = 'path is missing or empty';
+                } else if (typeof payload.content !== 'string') {
+                    valid = false;
+                    reason = 'content is missing or not a string';
+                }
+                
+                if (type === MessageType.FILE_CHANGED) {
+                    console.log(`[TRACE 5] VALIDATION RESULT\ntype=FILE_CHANGED\nvalid=${valid}`);
+                    if (!valid) {
+                        console.log(`Failure reason: ${reason}`);
+                    }
+                }
+                return valid;
+            }
             case MessageType.FILE_RENAMED:
                 return this.isObject(payload) &&
                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&

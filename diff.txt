@@ -1,0 +1,379 @@
+﻿diff --git a/server/src/protocol/Message.ts b/server/src/protocol/Message.ts
+index 4a9b413..8f21923 100644
+--- a/server/src/protocol/Message.ts
++++ b/server/src/protocol/Message.ts
+@@ -101,6 +101,15 @@ export interface FileDeletedMessage extends BaseMessage {
+     };
+ }
+ 
++export interface FileRenamedMessage extends BaseMessage {
++    type: MessageType.FILE_RENAMED;
++    payload: {
++        sessionId: string;
++        oldPath: string;
++        newPath: string;
++    };
++}
++
+ export interface ErrorMessage extends BaseMessage {
+     type: MessageType.ERROR;
+     payload: {
+@@ -123,4 +132,5 @@ export type Message =
+     | FileCreatedMessage
+     | FileChangedMessage
+     | FileDeletedMessage
++    | FileRenamedMessage
+     | ErrorMessage;
+diff --git a/server/src/protocol/MessageValidator.ts b/server/src/protocol/MessageValidator.ts
+index 7261be5..a8bcb12 100644
+--- a/server/src/protocol/MessageValidator.ts
++++ b/server/src/protocol/MessageValidator.ts
+@@ -61,6 +61,11 @@ export class MessageValidator {
+                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
+                        typeof payload.path === 'string' && payload.path.trim() !== '' &&
+                        typeof payload.content === 'string';
++            case MessageType.FILE_RENAMED:
++                return this.isObject(payload) &&
++                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
++                       typeof payload.oldPath === 'string' && payload.oldPath.trim() !== '' &&
++                       typeof payload.newPath === 'string' && payload.newPath.trim() !== '';
+             case MessageType.ERROR:
+                 return this.isObject(payload) && 
+                        typeof payload.code === 'string' && payload.code.trim() !== '' &&
+diff --git a/server/src/server.ts b/server/src/server.ts
+index 3dd9a47..ac24394 100644
+--- a/server/src/server.ts
++++ b/server/src/server.ts
+@@ -100,6 +100,7 @@ class CollaborationServer {
+                 case MessageType.FILE_CREATED:
+                 case MessageType.FILE_CHANGED:
+                 case MessageType.FILE_DELETED:
++                case MessageType.FILE_RENAMED:
+                     this.handleFileSyncEvent(ws, message);
+                     break;
+                 default:
+@@ -268,7 +269,9 @@ class CollaborationServer {
+     private handleFileSyncEvent(ws: WebSocket, message: Message): void {
+         const payload = message.payload as any;
+         const sessionId = payload.sessionId;
+-        const path = payload.path;
++        const pathStr = message.type === MessageType.FILE_RENAMED 
++            ? `${payload.oldPath} -> ${payload.newPath}` 
++            : payload.path;
+ 
+         try {
+             const session = this.sessionRegistry.getSession(sessionId);
+@@ -277,7 +280,7 @@ class CollaborationServer {
+                 return;
+             }
+ 
+-            console.log(`[INFO] ${message.type}: ${path}`);
++            console.log(`[INFO] ${message.type}: ${pathStr}`);
+ 
+             // Broadcast to everyone else in the session
+             const allClients = session.getClients();
+diff --git a/src/network/CollaborationClient.ts b/src/network/CollaborationClient.ts
+index 70b08d9..16db0a5 100644
+--- a/src/network/CollaborationClient.ts
++++ b/src/network/CollaborationClient.ts
+@@ -98,6 +98,9 @@ export class CollaborationClient extends EventEmitter {
+             case MessageType.FILE_DELETED:
+                 this.emit('fileDeleted', message);
+                 break;
++            case MessageType.FILE_RENAMED:
++                this.emit('fileRenamed', message);
++                break;
+             case MessageType.ERROR:
+                 this.handleError(message as ErrorMessage);
+                 break;
+@@ -322,6 +325,11 @@ export class CollaborationClient extends EventEmitter {
+     }
+ 
+     public sendWorkspaceSnapshot(sessionId: string, files: Array<{path: string, content: string}>, correlationId: string): void {
++        if (!this.isConnected()) {
++            this.log('[WARN] Cannot send WORKSPACE_SNAPSHOT: not connected.');
++            return;
++        }
++
+         const snapshotMsg: Message = {
+             messageId: crypto.randomUUID(),
+             correlationId,
+@@ -355,6 +363,10 @@ files=${files.length}`);
+     }
+ 
+     public sendFileCreated(sessionId: string, path: string, content: string): void {
++        if (!this.isConnected()) {
++            this.log('[WARN] Cannot send FILE_CREATED: not connected.');
++            return;
++        }
+         const msg: Message = {
+             messageId: crypto.randomUUID(),
+             protocolVersion: 1,
+@@ -370,6 +382,10 @@ files=${files.length}`);
+     }
+ 
+     public sendFileChanged(sessionId: string, path: string, content: string): void {
++        if (!this.isConnected()) {
++            this.log('[WARN] Cannot send FILE_CHANGED: not connected.');
++            return;
++        }
+         const msg: Message = {
+             messageId: crypto.randomUUID(),
+             protocolVersion: 1,
+@@ -385,6 +401,10 @@ files=${files.length}`);
+     }
+ 
+     public sendFileDeleted(sessionId: string, path: string): void {
++        if (!this.isConnected()) {
++            this.log('[WARN] Cannot send FILE_DELETED: not connected.');
++            return;
++        }
+         const msg: Message = {
+             messageId: crypto.randomUUID(),
+             protocolVersion: 1,
+@@ -398,4 +418,23 @@ files=${files.length}`);
+             this.log(`[ERROR] Failed to send FILE_DELETED: ${error}`);
+         }
+     }
++
++    public sendFileRenamed(sessionId: string, oldPath: string, newPath: string): void {
++        if (!this.isConnected()) {
++            this.log('[WARN] Cannot send FILE_RENAMED: not connected.');
++            return;
++        }
++        const msg: Message = {
++            messageId: crypto.randomUUID(),
++            protocolVersion: 1,
++            timestamp: Date.now(),
++            type: MessageType.FILE_RENAMED,
++            payload: { sessionId, oldPath, newPath }
++        };
++        try {
++            this.client.send(msg);
++        } catch (error) {
++            this.log(`[ERROR] Failed to send FILE_RENAMED: ${error}`);
++        }
++    }
+ }
+diff --git a/src/network/WebSocketClient.ts b/src/network/WebSocketClient.ts
+index 68ef9fb..0527250 100644
+--- a/src/network/WebSocketClient.ts
++++ b/src/network/WebSocketClient.ts
+@@ -163,6 +163,23 @@ export class WebSocketClient extends EventEmitter {
+         }
+     }
+ 
++    /**
++     * Forces immediate disconnection and resets internal state to DISCONNECTED.
++     * Unlike disconnect(), this does not wait for a graceful close handshake.
++     * Use this before calling connect() again for reconnection scenarios.
++     */
++    public forceDisconnect(): void {
++        if (this.ws) {
++            try {
++                this.ws.close();
++            } catch {
++                // Ignore errors during forced cleanup
++            }
++            this.cleanup();
++        }
++        this.setState(ConnectionState.DISCONNECTED);
++    }
++
+     /**
+      * Disposes the client, closing any active connection and removing event listeners.
+      */
+diff --git a/src/protocol/Message.ts b/src/protocol/Message.ts
+index 7f87937..3a0ccbf 100644
+--- a/src/protocol/Message.ts
++++ b/src/protocol/Message.ts
+@@ -101,6 +101,15 @@ export interface FileDeletedMessage extends BaseMessage {
+     };
+ }
+ 
++export interface FileRenamedMessage extends BaseMessage {
++    type: MessageType.FILE_RENAMED;
++    payload: {
++        sessionId: string;
++        oldPath: string;
++        newPath: string;
++    };
++}
++
+ export interface ErrorMessage extends BaseMessage {
+     type: MessageType.ERROR;
+     payload: {
+@@ -123,4 +132,5 @@ export type Message =
+     | FileCreatedMessage
+     | FileChangedMessage
+     | FileDeletedMessage
++    | FileRenamedMessage
+     | ErrorMessage;
+diff --git a/src/protocol/MessageValidator.ts b/src/protocol/MessageValidator.ts
+index 7261be5..a8bcb12 100644
+--- a/src/protocol/MessageValidator.ts
++++ b/src/protocol/MessageValidator.ts
+@@ -61,6 +61,11 @@ export class MessageValidator {
+                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
+                        typeof payload.path === 'string' && payload.path.trim() !== '' &&
+                        typeof payload.content === 'string';
++            case MessageType.FILE_RENAMED:
++                return this.isObject(payload) &&
++                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
++                       typeof payload.oldPath === 'string' && payload.oldPath.trim() !== '' &&
++                       typeof payload.newPath === 'string' && payload.newPath.trim() !== '';
+             case MessageType.ERROR:
+                 return this.isObject(payload) && 
+                        typeof payload.code === 'string' && payload.code.trim() !== '' &&
+diff --git a/src/workspace/WorkspaceSyncService.ts b/src/workspace/WorkspaceSyncService.ts
+index cb0b5cc..4cfb7b0 100644
+--- a/src/workspace/WorkspaceSyncService.ts
++++ b/src/workspace/WorkspaceSyncService.ts
+@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
+ import * as path from 'path';
+ import { ILogger } from '../network/WebSocketClient';
+ import { CollaborationClient } from '../network/CollaborationClient';
+-import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage } from '../protocol/Message';
++import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage } from '../protocol/Message';
+ 
+ export class WorkspaceSyncService {
+     private readonly MAX_FILE_SIZE = 1 * 1024 * 1024; // 1 MB
+@@ -14,6 +14,7 @@ export class WorkspaceSyncService {
+     private readonly boundOnRemoteFileCreated: (msg: FileCreatedMessage) => void;
+     private readonly boundOnRemoteFileChanged: (msg: FileChangedMessage) => void;
+     private readonly boundOnRemoteFileDeleted: (msg: FileDeletedMessage) => void;
++    private readonly boundOnRemoteFileRenamed: (msg: FileRenamedMessage) => void;
+ 
+     constructor(
+         private readonly sessionId: string,
+@@ -23,6 +24,7 @@ export class WorkspaceSyncService {
+         this.boundOnRemoteFileCreated = this.onRemoteFileCreated.bind(this);
+         this.boundOnRemoteFileChanged = this.onRemoteFileChanged.bind(this);
+         this.boundOnRemoteFileDeleted = this.onRemoteFileDeleted.bind(this);
++        this.boundOnRemoteFileRenamed = this.onRemoteFileRenamed.bind(this);
+     }
+ 
+     private log(message: string): void {
+@@ -58,14 +60,39 @@ export class WorkspaceSyncService {
+             await this.handleLocalFileEvent(uri, rootPath, 'DELETE');
+         }));
+ 
++        this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
++            for (const file of event.files) {
++                await this.handleLocalFileRenamed(file.oldUri, file.newUri, rootPath);
++            }
++        }));
++
+         // Listen for remote events from the collaboration client
+         this.collaborationClient.on('fileCreated', this.boundOnRemoteFileCreated);
+         this.collaborationClient.on('fileChanged', this.boundOnRemoteFileChanged);
+         this.collaborationClient.on('fileDeleted', this.boundOnRemoteFileDeleted);
++        this.collaborationClient.on('fileRenamed', this.boundOnRemoteFileRenamed);
+ 
+         this.log('[INFO] WorkspaceSyncService started.');
+     }
+ 
++    private async handleLocalFileRenamed(oldUri: vscode.Uri, newUri: vscode.Uri, rootPath: string): Promise<void> {
++        const oldRelativePath = path.relative(rootPath, oldUri.fsPath).replace(/\\/g, '/');
++        const newRelativePath = path.relative(rootPath, newUri.fsPath).replace(/\\/g, '/');
++
++        if (oldRelativePath.includes('.git/') || oldRelativePath.includes('node_modules/') || oldRelativePath.includes('.vscode/') ||
++            newRelativePath.includes('.git/') || newRelativePath.includes('node_modules/') || newRelativePath.includes('.vscode/')) {
++            return;
++        }
++
++        if (this.applyingRemoteChanges.has(oldRelativePath) || this.applyingRemoteChanges.has(newRelativePath)) {
++            this.log(`[DEBUG] Ignoring local RENAME event for ${oldRelativePath} -> ${newRelativePath} (remote apply guard active)`);
++            return;
++        }
++
++        this.log(`[INFO] Local file renamed: ${oldRelativePath} -> ${newRelativePath}`);
++        this.collaborationClient.sendFileRenamed(this.sessionId, oldRelativePath, newRelativePath);
++    }
++
+     private async handleLocalFileEvent(uri: vscode.Uri, rootPath: string, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
+         const relativePath = path.relative(rootPath, uri.fsPath).replace(/\\/g, '/');
+ 
+@@ -129,6 +156,51 @@ export class WorkspaceSyncService {
+         await this.applyRemoteFileEvent(message.payload.path, undefined, 'DELETE');
+     }
+ 
++    private async onRemoteFileRenamed(message: FileRenamedMessage): Promise<void> {
++        await this.applyRemoteFileRenamed(message.payload.oldPath, message.payload.newPath);
++    }
++
++    private async applyRemoteFileRenamed(oldPath: string, newPath: string): Promise<void> {
++        const workspaceFolders = vscode.workspace.workspaceFolders;
++        if (!workspaceFolders || workspaceFolders.length === 0) {
++            return;
++        }
++
++        if (oldPath.startsWith('/') || oldPath.includes('../') || oldPath === '..' ||
++            newPath.startsWith('/') || newPath.includes('../') || newPath === '..') {
++            this.log(`[WARN] Skipping unsafe remote rename paths: ${oldPath} -> ${newPath}`);
++            return;
++        }
++
++        const rootUri = workspaceFolders[0].uri;
++        const oldUri = vscode.Uri.joinPath(rootUri, ...oldPath.split('/'));
++        const newUri = vscode.Uri.joinPath(rootUri, ...newPath.split('/'));
++
++        this.applyingRemoteChanges.add(oldPath);
++        this.applyingRemoteChanges.add(newPath);
++
++        try {
++            this.log(`[INFO] Applying remote RENAME: ${oldPath} -> ${newPath}`);
++            
++            const parentParts = newPath.split('/');
++            parentParts.pop();
++            
++            if (parentParts.length > 0) {
++                const parentUri = vscode.Uri.joinPath(rootUri, ...parentParts);
++                await vscode.workspace.fs.createDirectory(parentUri);
++            }
++
++            await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: true });
++        } catch (error) {
++            this.log(`[ERROR] Failed to apply remote RENAME ${oldPath} -> ${newPath}: ${error}`);
++        } finally {
++            setTimeout(() => {
++                this.applyingRemoteChanges.delete(oldPath);
++                this.applyingRemoteChanges.delete(newPath);
++            }, 100);
++        }
++    }
++
+     private async applyRemoteFileEvent(relativePath: string, content: string | undefined, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
+         const workspaceFolders = vscode.workspace.workspaceFolders;
+         if (!workspaceFolders || workspaceFolders.length === 0) {
+@@ -180,6 +252,23 @@ export class WorkspaceSyncService {
+         }
+     }
+ 
++    /**
++     * Adds a remote-apply guard for the given relative path.
++     * While the guard is active, local file system events for this path
++     * will be ignored and NOT sent to the server.
++     * Use this to prevent snapshot application from triggering outbound sync messages.
++     */
++    public addRemoteApplyGuard(relativePath: string): void {
++        this.applyingRemoteChanges.add(relativePath);
++    }
++
++    /**
++     * Removes the remote-apply guard for the given relative path.
++     */
++    public removeRemoteApplyGuard(relativePath: string): void {
++        this.applyingRemoteChanges.delete(relativePath);
++    }
++
+     private isLikelyBinary(filePath: string, content: Uint8Array): boolean {
+         const ext = path.extname(filePath).toLowerCase();
+         const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.exe', '.dll', '.zip', '.tar', '.gz'];
+@@ -209,5 +298,6 @@ export class WorkspaceSyncService {
+         this.collaborationClient.removeListener('fileCreated', this.boundOnRemoteFileCreated);
+         this.collaborationClient.removeListener('fileChanged', this.boundOnRemoteFileChanged);
+         this.collaborationClient.removeListener('fileDeleted', this.boundOnRemoteFileDeleted);
++        this.collaborationClient.removeListener('fileRenamed', this.boundOnRemoteFileRenamed);
+     }
+ }

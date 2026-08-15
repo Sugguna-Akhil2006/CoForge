@@ -101,6 +101,11 @@ class CollaborationServer {
                 case MessageType.FILE_CHANGED:
                 case MessageType.FILE_DELETED:
                 case MessageType.FILE_RENAMED:
+                    if (message.type === MessageType.FILE_CHANGED) {
+                        console.log(`[TRACE 4] SERVER RECEIVED\ntype=FILE_CHANGED\nmessageId=${message.messageId}\n${JSON.stringify(message, null, 2)}`);
+                    } else {
+                        console.log(`[TRACE 4] SERVER RECEIVED\ntype=${message.type}\nmessageId=${message.messageId}`);
+                    }
                     this.handleFileSyncEvent(ws, message);
                     break;
                 default:
@@ -275,7 +280,13 @@ class CollaborationServer {
 
         try {
             const session = this.sessionRegistry.getSession(sessionId);
-            if (!session || !session.hasClient(ws)) {
+            const senderIsMember = session ? session.hasClient(ws) : false;
+            
+            if (message.type === MessageType.FILE_CHANGED) {
+                console.log(`[TRACE 6] SESSION CHECK\nsessionId=${sessionId}\nsenderInSession=${senderIsMember}\nclientCount=${session ? session.getClients().length : 0}`);
+            }
+
+            if (!session || !senderIsMember) {
                 this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
                 return;
             }
@@ -284,10 +295,19 @@ class CollaborationServer {
 
             // Broadcast to everyone else in the session
             const allClients = session.getClients();
+            let recipientsCount = 0;
+            let recipientStates = [];
             for (const client of allClients) {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
                     this.sendMessage(client, message);
+                    recipientsCount++;
+                    recipientStates.push(`client_readyState=${client.readyState}`);
+                } else if (client !== ws) {
+                    recipientStates.push(`client_readyState=${client.readyState}`);
                 }
+            }
+            if (message.type === MessageType.FILE_CHANGED) {
+                console.log(`[TRACE 7] BROADCAST\nsessionId=${sessionId}\npath=${payload.path}\nrecipientCount=${recipientsCount}\n${recipientStates.join('\n')}`);
             }
         } catch (error) {
             console.error(`[ERROR] Failed to handle ${message.type}:`, error);
