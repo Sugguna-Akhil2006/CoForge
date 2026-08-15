@@ -5,6 +5,7 @@ import { MessageValidator } from '../protocol/MessageValidator';
 import { NetworkError } from './NetworkError';
 import * as crypto from 'crypto';
 import { EventEmitter } from 'events';
+import { getServerUrl } from '../config';
 
 interface PendingRequest {
     resolve: (msg: any) => void;
@@ -15,7 +16,7 @@ interface PendingRequest {
 export class CollaborationClient extends EventEmitter {
     private client: WebSocketClient;
     private pendingRequests = new Map<string, PendingRequest>();
-    private currentUrl: string = 'ws://localhost:3000';
+    private currentUrl: string = getServerUrl();
 
     private workspaceSnapshot: Array<{ path: string; content: string }> = [];
 
@@ -150,7 +151,7 @@ export class CollaborationClient extends EventEmitter {
         }
     }
 
-    public async connect(url: string = 'ws://localhost:3000'): Promise<void> {
+    public async connect(url: string = getServerUrl()): Promise<void> {
         this.log(`[CLIENT DEBUG] connect() start - url=${url}`);
         this.currentUrl = url;
         await this.client.connect(url);

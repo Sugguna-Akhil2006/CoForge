@@ -6,6 +6,7 @@ import { CollaborationClient } from '../../network/CollaborationClient';
 import { WorkspaceSnapshotService } from '../../workspace/WorkspaceSnapshotService';
 import { WorkspaceSyncService } from '../../workspace/WorkspaceSyncService';
 import { Message, RequestWorkspaceSnapshotMessage } from '../../protocol/Message';
+import { getServerUrl } from '../../config';
 
 export interface ILogger {
     log(message: string): void;
@@ -31,7 +32,7 @@ export class SessionManager {
     constructor(
         private readonly logger?: ILogger,
         private readonly createClient: () => CollaborationClient = () => new CollaborationClient(logger),
-        private readonly serverUrl: string = 'ws://localhost:3000'
+        private readonly serverUrl: string = getServerUrl()
     ) {}
 
     private log(message: string): void {
@@ -77,16 +78,18 @@ export class SessionManager {
 
             // Set up snapshot request handler for the host
             this.collaborationClient.on('requestWorkspaceSnapshot', async (message: Message) => {
-                this.log('[INFO] Workspace snapshot requested.');
+                this.log('[SNAPSHOT DEBUG] Host receives snapshot request');
                 try {
+                    this.log('[SNAPSHOT DEBUG] Host generating workspace snapshot');
                     const snapshotService = new WorkspaceSnapshotService(this.logger);
                     const files = await snapshotService.buildSnapshot();
+                    this.log(`[SNAPSHOT DEBUG] Host snapshot contains ${files.length} files`);
                     console.log(`[DEBUG HOST] Snapshot file count: ${files.length}`);
                     console.log(`[DEBUG HOST] Snapshot files: ${files.slice(0, 10).map(f => f.path).join(', ')}`);
                     
                     if (this.collaborationClient && message.messageId) {
                         const reqMsg = message as RequestWorkspaceSnapshotMessage;
-                        this.log('[INFO] Sending workspace snapshot.');
+                        this.log('[SNAPSHOT DEBUG] WORKSPACE_SNAPSHOT sent');
                         this.collaborationClient.sendWorkspaceSnapshot(reqMsg.payload.sessionId, files, message.messageId);
                     }
                 } catch (error) {
@@ -115,7 +118,9 @@ export class SessionManager {
 
             return this.currentSession;
         } catch (error) {
-            this.currentSession.fail(error instanceof Error ? error : new Error(String(error)));
+            if (this.currentSession) {
+                this.currentSession.fail(error instanceof Error ? error : new Error(String(error)));
+            }
             this.log(`Session failed to start: ${error}`);
             
             if (this.collaborationClient) {
@@ -135,6 +140,7 @@ export class SessionManager {
      */
     public async joinSession(sessionId: string): Promise<void> {
         this.log(`[SESSION DEBUG] JOIN SESSION - requested session ID: ${sessionId}`);
+        this.log(`[CoForge DEBUG] JOIN server URL = ${this.serverUrl}`);
         if (this.hasActiveSession()) {
             throw new Error('An active session already exists for this workspace.');
         }
@@ -166,21 +172,40 @@ export class SessionManager {
             this.activeSessionId = sessionId;
 
             // Automatically request snapshot after joining
-            this.log('[INFO] Requesting workspace snapshot...');
+            this.log('[SNAPSHOT DEBUG] Requesting workspace snapshot');
+            this.log(`[SNAPSHOT DEBUG] Active session ID = ${sessionId}`);
             try {
                 const snapshotMsg = await this.collaborationClient.requestWorkspaceSnapshot(sessionId, 15000);
                 this.workspaceSnapshot = snapshotMsg.payload.files;
                 this.log('[INFO] Workspace snapshot received.');
-                this.log(`[INFO] Files received: ${this.workspaceSnapshot.length}`);
+                this.log(`[SNAPSHOT DEBUG] Client received WORKSPACE_SNAPSHOT with ${this.workspaceSnapshot.length} files`);
 
-                const snapshotService = new WorkspaceSnapshotService(this.logger);
-                await snapshotService.applySnapshot(this.workspaceSnapshot);
-                this.log('[INFO] Workspace files have been materialized into the guest workspace.');
-
-                // Start live sync service for the guest after applying snapshot
                 if (this.collaborationClient) {
+                    // Start live sync service for the guest BEFORE applying snapshot to set guards
                     this.syncService = new WorkspaceSyncService(sessionId, this.collaborationClient, this.logger);
                     this.syncService.start();
+
+                    // Set remote-apply guards for all snapshot file paths
+                    const guardedPaths: string[] = [];
+                    for (const file of this.workspaceSnapshot) {
+                        const relativePath = file.path.replace(/\\/g, '/');
+                        this.syncService.addRemoteApplyGuard(relativePath);
+                        guardedPaths.push(relativePath);
+                    }
+
+                    this.log('[SNAPSHOT DEBUG] Applying snapshot to local workspace');
+                    const snapshotService = new WorkspaceSnapshotService(this.logger);
+                    await snapshotService.applySnapshot(this.workspaceSnapshot);
+                    this.log('[INFO] Workspace files have been materialized into the guest workspace.');
+
+                    // Clear all guards after a brief delay to let file watcher events settle
+                    setTimeout(() => {
+                        for (const p of guardedPaths) {
+                            if (this.syncService) {
+                                this.syncService.removeRemoteApplyGuard(p);
+                            }
+                        }
+                    }, 200);
 
                     // Set up disconnect listener for reconnection (guest only)
                     this.setupDisconnectHandler();
@@ -374,7 +399,9 @@ export class SessionManager {
             this.currentSession.markStopped();
             this.log('Session stopped.');
         } catch (error) {
-            this.currentSession.fail(error instanceof Error ? error : new Error(String(error)));
+            if (this.currentSession) {
+                this.currentSession.fail(error instanceof Error ? error : new Error(String(error)));
+            }
             this.log(`Error stopping session: ${error}`);
             throw error;
         } finally {

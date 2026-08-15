@@ -9,7 +9,7 @@ export class JoinCollaborationCommand {
     public async execute(): Promise<void> {
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) {
-            vscode.window.showWarningMessage('You must have a workspace open to join a CoForge session.');
+            vscode.window.showErrorMessage('CoForge: Please open a workspace folder before joining a collaboration session.');
             return;
         }
 

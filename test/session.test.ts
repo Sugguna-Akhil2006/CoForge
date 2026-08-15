@@ -15,7 +15,15 @@ jest.mock('vscode', () => ({
             onDidChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
             onDidDelete: jest.fn().mockReturnValue({ dispose: jest.fn() }),
             dispose: jest.fn()
-        })
+        }),
+        getConfiguration: jest.fn().mockReturnValue({
+            get: jest.fn().mockReturnValue('wss://coforge.onrender.com')
+        }),
+        onDidChangeTextDocument: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onDidSaveTextDocument: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onDidCreateFiles: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onDidDeleteFiles: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onDidRenameFiles: jest.fn().mockReturnValue({ dispose: jest.fn() })
     },
     window: {
         showInformationMessage: jest.fn(),
@@ -169,6 +177,38 @@ describe('SessionManager', () => {
         await expect(failingManager.startSession()).rejects.toThrow('PING request timed out');
         expect(failingManager.hasActiveSession()).toBe(false);
         expect(mockClient.dispose).toHaveBeenCalled();
+    });
+
+    it('should not throw undefined.fail if session is stopped while starting', async () => {
+        let rejectConnect: (err: Error) => void;
+        mockClient = {
+            on: jest.fn(),
+            removeListener: jest.fn(),
+            connect: jest.fn().mockImplementation(() => new Promise((_, reject) => {
+                rejectConnect = reject;
+            })),
+            isConnected: jest.fn().mockReturnValue(false),
+            disconnect: jest.fn(),
+            ping: jest.fn(),
+            createSession: jest.fn(),
+            joinSession: jest.fn(),
+            requestWorkspaceSnapshot: jest.fn(),
+            dispose: jest.fn()
+        };
+        const slowMockCreateClient = () => mockClient;
+        const manager = new SessionManager(mockLogger, slowMockCreateClient);
+
+        // Start the session, which will block on connect()
+        const startPromise = manager.startSession();
+        
+        // Concurrently stop the session, which clears manager.currentSession
+        await manager.stopSession();
+        
+        // Now reject the connection to trigger the catch block in startSession
+        rejectConnect!(new Error('Simulated network error during start'));
+        
+        // The start promise should reject with the original network error, NOT a TypeError for reading 'fail' of undefined.
+        await expect(startPromise).rejects.toThrow('Simulated network error during start');
     });
 
     it('should stop session and clean up (Successful stop)', async () => {

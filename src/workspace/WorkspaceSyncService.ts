@@ -64,7 +64,7 @@ export class WorkspaceSyncService {
             if (event.document.uri.scheme !== 'file') {
                 return;
             }
-            const relativePath = path.relative(rootPath, event.document.uri.fsPath).replace(/\\/g, '/');
+            const relativePath = vscode.workspace.asRelativePath(event.document.uri, false).replace(/\\/g, '/');
             const content = event.document.getText();
             this.log(`[TRACE 1] onDidChangeTextDocument FIRED\npath=${event.document.uri.fsPath}\ntextLength=${content.length}\nsessionId=${this.sessionId}`);
 
@@ -98,8 +98,8 @@ export class WorkspaceSyncService {
     }
 
     private async handleLocalFileRenamed(oldUri: vscode.Uri, newUri: vscode.Uri, rootPath: string): Promise<void> {
-        const oldRelativePath = path.relative(rootPath, oldUri.fsPath).replace(/\\/g, '/');
-        const newRelativePath = path.relative(rootPath, newUri.fsPath).replace(/\\/g, '/');
+        const oldRelativePath = vscode.workspace.asRelativePath(oldUri, false).replace(/\\/g, '/');
+        const newRelativePath = vscode.workspace.asRelativePath(newUri, false).replace(/\\/g, '/');
 
         if (oldRelativePath.includes('.git/') || oldRelativePath.includes('node_modules/') || oldRelativePath.includes('.vscode/') ||
             newRelativePath.includes('.git/') || newRelativePath.includes('node_modules/') || newRelativePath.includes('.vscode/')) {
@@ -116,7 +116,7 @@ export class WorkspaceSyncService {
     }
 
     private async handleLocalFileEvent(uri: vscode.Uri, rootPath: string, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
-        const relativePath = path.relative(rootPath, uri.fsPath).replace(/\\/g, '/');
+        const relativePath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
 
         // Ignore excluded folders
         if (relativePath.includes('.git/') || relativePath.includes('node_modules/') || relativePath.includes('.vscode/')) {

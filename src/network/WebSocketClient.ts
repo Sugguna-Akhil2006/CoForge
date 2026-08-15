@@ -63,9 +63,11 @@ export class WebSocketClient extends EventEmitter {
         }
 
         this.setState(ConnectionState.CONNECTING);
-        this.log(`Connecting to ${url}...`);
+        this.log(`[CoForge DEBUG] Attempting WebSocket connection = ${url}`);
 
         return new Promise((resolve, reject) => {
+            let timeoutId: NodeJS.Timeout;
+
             try {
                 this.ws = new WebSocket(url);
             } catch (err) {
@@ -75,30 +77,59 @@ export class WebSocketClient extends EventEmitter {
             }
 
             const onOpen = () => {
+                clearTimeout(timeoutId);
                 this.setState(ConnectionState.CONNECTED);
-                this.log('WebSocket connected successfully.');
+                this.log(`[CoForge DEBUG] WebSocket OPEN: ${url}`);
                 this.emit('connected');
                 resolve();
             };
 
-            const onError = (error: Error) => {
-                this.log(`WebSocket connection error: ${error.message}`);
+            const onError = (error: any) => {
+                let errorMsg = error instanceof Error ? error.message : '';
+                if (!errorMsg || errorMsg.trim() === '') {
+                    errorMsg = error?.code || error?.name || JSON.stringify(error) || String(error) || 'Unknown error';
+                }
+                
+                const fullDetails = `name=${error?.name}, code=${error?.code}, message=${error?.message}, cause=${error?.cause}`;
+                this.log(`[CoForge DEBUG] WebSocket ERROR: ${fullDetails} | Raw string: ${String(error)}`);
+                
                 if (this.state === ConnectionState.CONNECTING) {
+                    clearTimeout(timeoutId);
                     this.setState(ConnectionState.DISCONNECTED);
                     this.cleanup();
-                    reject(new NetworkError(`WebSocket connection failed: ${error.message}`));
+                    reject(new NetworkError(`WebSocket connection failed: ${errorMsg}`));
                 } else {
-                    this.emit('error', new NetworkError(error.message));
+                    this.emit('error', new NetworkError(errorMsg));
                 }
             };
 
             const onClose = (code: number, reason: Buffer) => {
                 const wasClean = code === 1000;
-                this.log(`WebSocket closed. Code: ${code}, Clean: ${wasClean}`);
+                this.log(`[CoForge DEBUG] WebSocket CLOSE: code=${code}, reason=${reason.toString()}, wasClean=${wasClean}`);
+                
+                if (this.state === ConnectionState.CONNECTING) {
+                    clearTimeout(timeoutId);
+                }
+                
                 this.setState(ConnectionState.DISCONNECTED);
                 this.cleanup();
                 this.emit('disconnected', { code, reason: reason.toString(), wasClean });
             };
+
+            // Set 10 second timeout
+            timeoutId = setTimeout(() => {
+                if (this.state === ConnectionState.CONNECTING) {
+                    this.log(`[CoForge DEBUG] WebSocket connection timeout: ${url}`);
+                    this.setState(ConnectionState.DISCONNECTED);
+                    this.cleanup();
+                    
+                    if (this.ws) {
+                        try { this.ws.close(); } catch (e) {}
+                    }
+                    
+                    reject(new NetworkError(`WebSocket connection timeout: ${url}`));
+                }
+            }, 10000);
 
             const onMessage = (data: Buffer | ArrayBuffer | Buffer[] | string, isBinary: boolean) => {
                 try {

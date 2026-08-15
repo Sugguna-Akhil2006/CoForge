@@ -35,7 +35,7 @@ export class WorkspaceSnapshotService {
         const uris = await vscode.workspace.findFiles('**/*', excludePattern, this.MAX_FILES);
         
         for (const uri of uris) {
-            const relativePath = path.relative(rootPath, uri.fsPath).replace(/\\/g, '/');
+            const relativePath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
             try {
                 const stat = await vscode.workspace.fs.stat(uri);
                 if (stat.size > this.MAX_FILE_SIZE) {

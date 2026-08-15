@@ -190,6 +190,7 @@ class CollaborationServer {
     }
 
     private handleRequestWorkspaceSnapshot(ws: WebSocket, message: RequestWorkspaceSnapshotMessage): void {
+        console.log(`[SNAPSHOT DEBUG] Snapshot request received by server`);
         console.log(`[INFO] Received REQUEST_WORKSPACE_SNAPSHOT (messageId: ${message.messageId})`);
         try {
             const sessionId = message.payload.sessionId;
@@ -215,6 +216,7 @@ class CollaborationServer {
             this.snapshotRequests.set(message.messageId, ws);
 
             // Forward to host
+            console.log(`[SNAPSHOT DEBUG] Forwarding snapshot request to host`);
             this.sendMessage(host, message);
         } catch (error) {
             console.error('[ERROR] Failed to handle REQUEST_WORKSPACE_SNAPSHOT:', error);
@@ -260,6 +262,7 @@ class CollaborationServer {
 
             // Verify requesting client is still connected and in session
             if (session.hasClient(requestingClient) && requestingClient.readyState === WebSocket.OPEN) {
+                console.log(`[SNAPSHOT DEBUG] Server forwarding WORKSPACE_SNAPSHOT to client`);
                 this.sendMessage(requestingClient, message);
                 console.log(`[INFO] Forwarded WORKSPACE_SNAPSHOT to requesting guest.`);
             } else {

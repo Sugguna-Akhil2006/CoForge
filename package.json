@@ -2,7 +2,7 @@
   "name": "coforge",
   "displayName": "CoForge",
   "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "coforge",
   "icon": "icon.png",
   "repository": {
@@ -35,7 +35,17 @@
         "command": "coforge.requestWorkspaceSnapshot",
         "title": "CoForge: Request Workspace Snapshot"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CoForge",
+      "properties": {
+        "coforge.serverUrl": {
+          "type": "string",
+          "default": "wss://coforge.onrender.com",
+          "description": "The WebSocket URL of the CoForge collaboration server."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",
