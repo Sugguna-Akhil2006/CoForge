@@ -1,12 +1,13 @@
 {
   "name": "coforge",
   "displayName": "CoForge",
-  "description": "CoForge Collaboration Extension for VS Code",
-  "version": "1.0.0",
+  "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
+  "version": "1.0.1",
   "publisher": "coforge",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/Sugguna-Akhil2006/CoForge.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -50,7 +51,7 @@
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
     "@types/node": "^26.2.0",
-    "@types/vscode": "^1.125.0",
+    "@types/vscode": "^1.90.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "jest": "^30.4.2",
