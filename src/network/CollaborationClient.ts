@@ -17,6 +17,7 @@ export class CollaborationClient extends EventEmitter {
     private client: WebSocketClient;
     private pendingRequests = new Map<string, PendingRequest>();
     private currentUrl: string = getServerUrl();
+    public clientId?: string;
 
     private workspaceSnapshot: Array<{ path: string; content: string }> = [];
 
@@ -51,6 +52,9 @@ export class CollaborationClient extends EventEmitter {
     }
 
     private handleMessage(data: unknown): void {
+        const rawMsg = data as any;
+        this.log(`[CREATE TRACE] CLIENT RECEIVED\ntype=${rawMsg?.type}\nmessageId=${rawMsg?.messageId}\ncorrelationId=${rawMsg?.correlationId}`);
+
         if (!MessageValidator.isValidMessage(data)) {
             this.log('Received invalid protocol message from server.');
             return;
@@ -63,6 +67,7 @@ export class CollaborationClient extends EventEmitter {
                 this.handleResponse(message, 'PONG');
                 break;
             case MessageType.SESSION_CREATED:
+                this.log(`[CREATE TRACE] SESSION_CREATED RECEIVED\nmessageId=${message.messageId}\ncorrelationId=${message.correlationId}`);
                 this.handleResponse(message, 'SESSION_CREATED');
                 break;
             case MessageType.SESSION_JOINED:
@@ -97,11 +102,24 @@ export class CollaborationClient extends EventEmitter {
                 this.log(`[TRACE 8] CLIENT B RECEIVED\ntype=FILE_CHANGED\nmessageId=${message.messageId}`);
                 this.emit('fileChanged', message);
                 break;
+            case MessageType.FILE_EDIT:
+                this.log(`[TRACE 8] CLIENT B RECEIVED\ntype=FILE_EDIT\nmessageId=${message.messageId}`);
+                this.emit('fileEdit', message);
+                break;
             case MessageType.FILE_DELETED:
                 this.emit('fileDeleted', message);
                 break;
             case MessageType.FILE_RENAMED:
                 this.emit('fileRenamed', message);
+                break;
+            case MessageType.FILE_LOCK_GRANTED:
+                this.emit('fileLockGranted', message);
+                break;
+            case MessageType.FILE_LOCK_DENIED:
+                this.emit('fileLockDenied', message);
+                break;
+            case MessageType.FILE_UNLOCKED:
+                this.emit('fileUnlocked', message);
                 break;
             case MessageType.ERROR:
                 this.handleError(message as ErrorMessage);
@@ -128,6 +146,7 @@ export class CollaborationClient extends EventEmitter {
         const pending = this.pendingRequests.get(message.correlationId);
         if (pending) {
             this.log(`[CLIENT DEBUG] Resolving pending request for correlationId: ${message.correlationId}`);
+            this.log(`[CREATE TRACE] REQUEST RESOLVED`);
             clearTimeout(pending.timeoutId);
             pending.resolve(message);
             this.pendingRequests.delete(message.correlationId);
@@ -217,14 +236,19 @@ export class CollaborationClient extends EventEmitter {
             }, timeoutMs);
 
             this.pendingRequests.set(messageId, { 
-                resolve: (msg: any) => resolve(msg.payload.sessionId), 
+                resolve: (msg: any) => {
+                    this.clientId = msg.payload.clientId;
+                    resolve(msg.payload.sessionId);
+                }, 
                 reject, 
                 timeoutId 
             });
 
             try {
+                this.log(`[CREATE TRACE] CLIENT SOCKET=${this.client.socketId}`);
+                this.log(`[CREATE TRACE] SEND\nmessageId=${messageId}\nsessionId=undefined\nworkspaceId=${workspaceId}\nsocketReadyState=${this.client.getState()}`);
                 this.client.send(createMsg);
-                this.log(`Sent CREATE_SESSION for workspace ${workspaceId}`);
+                this.log(`[CREATE TRACE] SENT\nmessageId=${messageId}`);
             } catch (error) {
                 clearTimeout(timeoutId);
                 this.pendingRequests.delete(messageId);
@@ -264,7 +288,14 @@ export class CollaborationClient extends EventEmitter {
                 reject(new NetworkError('JOIN_SESSION request timed out.'));
             }, timeoutMs);
 
-            this.pendingRequests.set(messageId, { resolve, reject, timeoutId });
+            this.pendingRequests.set(messageId, { 
+                resolve: (msg: any) => {
+                    this.clientId = msg.payload.clientId;
+                    resolve();
+                }, 
+                reject, 
+                timeoutId 
+            });
 
             try {
                 this.log(`[CLIENT DEBUG] Sending JOIN_SESSION: exact sessionId='${sessionId}', exact messageId='${messageId}'`);
@@ -340,6 +371,7 @@ export class CollaborationClient extends EventEmitter {
             type: MessageType.WORKSPACE_SNAPSHOT,
             payload: {
                 sessionId,
+                snapshotRevision: 0,
                 files
             }
         };
@@ -355,7 +387,7 @@ files=${files.length}`);
         this.log(`[INFO] WORKSPACE_SNAPSHOT payload size: ${payloadSize}`);
         this.log(`[INFO] Sending WORKSPACE_SNAPSHOT with ${files.length} files.`);
 
-        console.log(`[DEBUG HOST] Sending WORKSPACE_SNAPSHOT file count: ${snapshotMsg.payload.files.length}`);
+        console.log(`[DEBUG HOST] Sending WORKSPACE_SNAPSHOT file count: ${files.length}`);
 
         try {
             this.client.send(snapshotMsg);
@@ -364,7 +396,7 @@ files=${files.length}`);
         }
     }
 
-    public sendFileCreated(sessionId: string, path: string, content: string): void {
+    public sendFileCreated(sessionId: string, path: string, content: string, baseRevision: number, revision: number): void {
         if (!this.isConnected()) {
             this.log('[WARN] Cannot send FILE_CREATED: not connected.');
             return;
@@ -374,7 +406,7 @@ files=${files.length}`);
             protocolVersion: 1,
             timestamp: Date.now(),
             type: MessageType.FILE_CREATED,
-            payload: { sessionId, path, content }
+            payload: { sessionId, path, content, baseRevision, revision, clientId: this.clientId || 'unknown' }
         };
         try {
             this.client.send(msg);
@@ -383,7 +415,7 @@ files=${files.length}`);
         }
     }
 
-    public sendFileChanged(sessionId: string, path: string, content: string): void {
+    public sendFileChanged(sessionId: string, path: string, content: string, baseRevision: number, revision: number): void {
         if (!this.isConnected()) {
             this.log('[WARN] Cannot send FILE_CHANGED: not connected.');
             return;
@@ -393,7 +425,7 @@ files=${files.length}`);
             protocolVersion: 1,
             timestamp: Date.now(),
             type: MessageType.FILE_CHANGED,
-            payload: { sessionId, path, content }
+            payload: { sessionId, path, content, baseRevision, revision, clientId: this.clientId || 'unknown' }
         };
         try {
             this.log(`[TRACE 3] WEBSOCKET SEND\ntype=FILE_CHANGED\nmessageId=${msg.messageId}\nsessionId=${sessionId}\n${JSON.stringify(msg, null, 2)}`);
@@ -403,7 +435,76 @@ files=${files.length}`);
         }
     }
 
-    public sendFileDeleted(sessionId: string, path: string): void {
+    public sendFileEdit(sessionId: string, path: string, baseRevision: number, revision: number, changes: Array<{ range: { start: { line: number, character: number }, end: { line: number, character: number } }, text: string }>): void {
+        const messageId = crypto.randomUUID();
+        const msg: Message = {
+            messageId,
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.FILE_EDIT,
+            payload: {
+                sessionId,
+                path,
+                baseRevision,
+                revision,
+                clientId: this.clientId || 'unknown',
+                changes
+            }
+        };
+        try {
+            this.log(`[TRACE 3] WEBSOCKET SEND\ntype=FILE_EDIT\nmessageId=${msg.messageId}\nsessionId=${sessionId}\nchanges=${changes.length}`);
+            this.client.send(msg);
+        } catch (error) {
+            this.log(`[ERROR] Failed to send FILE_EDIT: ${error}`);
+        }
+    }
+
+    public requestFileLock(sessionId: string, path: string): void {
+        const messageId = crypto.randomUUID();
+        const msg: Message = {
+            messageId,
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.REQUEST_FILE_LOCK,
+            payload: {
+                sessionId,
+                path
+            }
+        };
+        this.client.send(msg);
+    }
+
+    public releaseFileLock(sessionId: string, path: string): void {
+        const messageId = crypto.randomUUID();
+        const msg: Message = {
+            messageId,
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.RELEASE_FILE_LOCK,
+            payload: {
+                sessionId,
+                path
+            }
+        };
+        this.client.send(msg);
+    }
+
+    public sendFileLockHeartbeat(sessionId: string, path: string): void {
+        const messageId = crypto.randomUUID();
+        const msg: Message = {
+            messageId,
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.FILE_LOCK_HEARTBEAT,
+            payload: {
+                sessionId,
+                path
+            }
+        };
+        this.client.send(msg);
+    }
+
+    public sendFileDeleted(sessionId: string, path: string, baseRevision: number, revision: number): void {
         if (!this.isConnected()) {
             this.log('[WARN] Cannot send FILE_DELETED: not connected.');
             return;
@@ -413,7 +514,7 @@ files=${files.length}`);
             protocolVersion: 1,
             timestamp: Date.now(),
             type: MessageType.FILE_DELETED,
-            payload: { sessionId, path }
+            payload: { sessionId, path, baseRevision, revision, clientId: this.clientId || 'unknown' }
         };
         try {
             this.client.send(msg);
@@ -422,7 +523,7 @@ files=${files.length}`);
         }
     }
 
-    public sendFileRenamed(sessionId: string, oldPath: string, newPath: string): void {
+    public sendFileRenamed(sessionId: string, oldPath: string, newPath: string, baseRevision: number, revision: number): void {
         if (!this.isConnected()) {
             this.log('[WARN] Cannot send FILE_RENAMED: not connected.');
             return;
@@ -432,7 +533,7 @@ files=${files.length}`);
             protocolVersion: 1,
             timestamp: Date.now(),
             type: MessageType.FILE_RENAMED,
-            payload: { sessionId, oldPath, newPath }
+            payload: { sessionId, oldPath, newPath, baseRevision, revision, clientId: this.clientId || 'unknown' }
         };
         try {
             this.client.send(msg);

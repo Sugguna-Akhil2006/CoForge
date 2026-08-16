@@ -1,11 +1,15 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
-import { Message, CreateSessionMessage, JoinSessionMessage, RequestWorkspaceSnapshotMessage, WorkspaceSnapshotMessage } from './protocol/Message';
+import { 
+    Message, CreateSessionMessage, JoinSessionMessage, RequestWorkspaceSnapshotMessage, WorkspaceSnapshotMessage,
+    RequestFileLockMessage, ReleaseFileLockMessage, FileLockHeartbeatMessage
+} from './protocol/Message';
 import { MessageType } from './protocol/MessageType';
 import { MessageValidator } from './protocol/MessageValidator';
 import * as crypto from 'crypto';
 
 import { SessionRegistry } from './collaboration/SessionRegistry';
+import { Session } from './collaboration/Session';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
@@ -42,7 +46,21 @@ class CollaborationServer {
                 const session = this.sessionRegistry.getSessionForClient(ws);
                 if (session) {
                     console.log(`[SESSION DEBUG] ws.on('close') - Client was associated with session ${session.sessionId}`);
-                    this.sessionRegistry.removeClientFromAnySession(ws);
+                    const removedInfo = this.sessionRegistry.removeClientFromAnySession(ws);
+                    
+                    if (removedInfo) {
+                        const releasedPaths = session.releaseAllLocksForClient(removedInfo.clientId);
+                        for (const path of releasedPaths) {
+                            this.broadcastToSession(session, {
+                                messageId: crypto.randomUUID(),
+                                protocolVersion: 1,
+                                timestamp: Date.now(),
+                                type: MessageType.FILE_UNLOCKED,
+                                payload: { sessionId: session.sessionId, path }
+                            }, ws);
+                        }
+                    }
+
                     console.log(`[INFO] Client disconnected from session ${session.sessionId}`);
                     console.log(`[INFO] Session ${session.sessionId} retained after client disconnect.`);
                     this.sessionRegistry.logState(`ws.on('close') cleanup complete`);
@@ -97,12 +115,24 @@ class CollaborationServer {
                 case MessageType.WORKSPACE_SNAPSHOT:
                     this.handleWorkspaceSnapshot(ws, message as WorkspaceSnapshotMessage);
                     break;
+                case MessageType.REQUEST_FILE_LOCK:
+                    this.handleRequestFileLock(ws, message as RequestFileLockMessage);
+                    break;
+                case MessageType.RELEASE_FILE_LOCK:
+                    this.handleReleaseFileLock(ws, message as ReleaseFileLockMessage);
+                    break;
+                case MessageType.FILE_LOCK_HEARTBEAT:
+                    this.handleFileLockHeartbeat(ws, message as FileLockHeartbeatMessage);
+                    break;
                 case MessageType.FILE_CREATED:
                 case MessageType.FILE_CHANGED:
                 case MessageType.FILE_DELETED:
                 case MessageType.FILE_RENAMED:
+                case MessageType.FILE_EDIT:
                     if (message.type === MessageType.FILE_CHANGED) {
                         console.log(`[TRACE 4] SERVER RECEIVED\ntype=FILE_CHANGED\nmessageId=${message.messageId}\n${JSON.stringify(message, null, 2)}`);
+                    } else if (message.type === MessageType.FILE_EDIT) {
+                        console.log(`[SYNC DEBUG] SERVER RECEIVED FILE_EDIT\n[SYNC DEBUG] path=${(message.payload as any).path}\n[SYNC DEBUG] baseRevision=${(message.payload as any).baseRevision}`);
                     } else {
                         console.log(`[TRACE 4] SERVER RECEIVED\ntype=${message.type}\nmessageId=${message.messageId}`);
                     }
@@ -120,6 +150,7 @@ class CollaborationServer {
         console.log(`[INFO] Received CREATE_SESSION request (messageId: ${message.messageId}).`);
         try {
             const workspaceId = message.payload.workspaceId;
+            console.log(`[CREATE TRACE] SERVER RECEIVED\nmessageId=${message.messageId}\ntype=${message.type}\nworkspaceId=${workspaceId}\nsocketOpen=${ws.readyState === WebSocket.OPEN}`);
 
             if (this.sessionRegistry.getSessionForClient(ws)) {
                 this.sendError(ws, message, 'CLIENT_ALREADY_IN_SESSION', 'Client is already in a session.');
@@ -127,10 +158,10 @@ class CollaborationServer {
             }
 
             const session = this.sessionRegistry.createSession(workspaceId);
-            this.sessionRegistry.addClient(session.sessionId, ws);
+            const clientId = this.sessionRegistry.addClient(session.sessionId, ws);
             session.setHost(ws);
 
-            console.log(`[INFO] Created session ${session.sessionId} for workspace ${workspaceId}. Host set.`);
+            console.log(`[INFO] Created session ${session.sessionId} for workspace ${workspaceId}. Host set. clientId: ${clientId}`);
             console.log(`[SESSION DEBUG] EXACT SESSION ID RETURNED TO CLIENT: ${session.sessionId}`);
 
             const response: Message = {
@@ -140,10 +171,14 @@ class CollaborationServer {
                 timestamp: Date.now(),
                 type: MessageType.SESSION_CREATED,
                 payload: {
-                    sessionId: session.sessionId
+                    sessionId: session.sessionId,
+                    clientId
                 }
             };
+            
+            console.log(`[CREATE TRACE] SERVER SENDING\nrequestMessageId=${message.messageId}\nresponseMessageId=${response.messageId}\ncorrelationId=${response.correlationId}\nsessionId=${session.sessionId}`);
             this.sendMessage(ws, response);
+            console.log(`[CREATE TRACE] SERVER SENT`);
         } catch (error) {
             console.error('[ERROR] Failed to create session:', error instanceof Error ? error.message : String(error));
             this.sendError(ws, message, 'CREATE_SESSION_FAILED', error instanceof Error ? error.message : 'Unknown error occurred');
@@ -168,9 +203,9 @@ class CollaborationServer {
                 return;
             }
 
-            this.sessionRegistry.addClient(sessionId, ws);
+            const clientId = this.sessionRegistry.addClient(sessionId, ws);
 
-            console.log(`[INFO] Client joined session ${sessionId}.`);
+            console.log(`[INFO] Client joined session ${sessionId} with clientId ${clientId}.`);
 
             const response: Message = {
                 messageId: crypto.randomUUID(),
@@ -179,7 +214,8 @@ class CollaborationServer {
                 timestamp: Date.now(),
                 type: MessageType.SESSION_JOINED,
                 payload: {
-                    sessionId
+                    sessionId,
+                    clientId
                 }
             };
             this.sendMessage(ws, response);
@@ -262,7 +298,20 @@ class CollaborationServer {
 
             // Verify requesting client is still connected and in session
             if (session.hasClient(requestingClient) && requestingClient.readyState === WebSocket.OPEN) {
-                console.log(`[SNAPSHOT DEBUG] Server forwarding WORKSPACE_SNAPSHOT to client`);
+                // Filter and augment snapshot based on server's authoritative state
+                const authoritativeFiles = [];
+                for (const file of payload.files) {
+                    const state = session.getFileState(file.path);
+                    if (state && !state.exists) {
+                        continue; // Skip logically deleted files
+                    }
+                    authoritativeFiles.push(file);
+                }
+                
+                payload.files = authoritativeFiles;
+                payload.snapshotRevision = session.globalRevision;
+
+                console.log(`[SNAPSHOT DEBUG] Server forwarding WORKSPACE_SNAPSHOT to client (Filtered count: ${authoritativeFiles.length})`);
                 this.sendMessage(requestingClient, message);
                 console.log(`[INFO] Forwarded WORKSPACE_SNAPSHOT to requesting guest.`);
             } else {
@@ -272,6 +321,76 @@ class CollaborationServer {
             console.error('[ERROR] Failed to handle WORKSPACE_SNAPSHOT:', error);
             this.sendError(ws, message, 'SERVER_ERROR', 'Internal server error processing snapshot.');
         }
+    }
+
+    private handleRequestFileLock(ws: WebSocket, message: RequestFileLockMessage): void {
+        const { sessionId, path } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session) return;
+        
+        const clientId = session.getClientId(ws);
+        if (!clientId) return;
+
+        const lock = session.acquireLock(path, clientId, `User-${clientId.substring(0, 4)}`);
+        
+        if (lock && lock.ownerClientId === clientId) {
+            const granted: Message = {
+                messageId: crypto.randomUUID(),
+                protocolVersion: message.protocolVersion,
+                timestamp: Date.now(),
+                type: MessageType.FILE_LOCK_GRANTED,
+                payload: { sessionId, path, ownerClientId: lock.ownerClientId, ownerName: lock.ownerName }
+            };
+            this.sendMessage(ws, granted);
+            this.broadcastToSession(session, granted, ws);
+        } else {
+            const activeLock = session.getLock(path);
+            const denied: Message = {
+                messageId: crypto.randomUUID(),
+                protocolVersion: message.protocolVersion,
+                timestamp: Date.now(),
+                type: MessageType.FILE_LOCK_DENIED,
+                payload: { 
+                    sessionId, 
+                    path, 
+                    ownerClientId: activeLock?.ownerClientId || 'unknown', 
+                    ownerName: activeLock?.ownerName || 'Unknown User',
+                    reason: 'FILE_IN_USE'
+                }
+            };
+            this.sendMessage(ws, denied);
+        }
+    }
+
+    private handleReleaseFileLock(ws: WebSocket, message: ReleaseFileLockMessage): void {
+        const { sessionId, path } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session) return;
+        
+        const clientId = session.getClientId(ws);
+        if (!clientId) return;
+
+        if (session.releaseLock(path, clientId)) {
+            const unlocked: Message = {
+                messageId: crypto.randomUUID(),
+                protocolVersion: message.protocolVersion,
+                timestamp: Date.now(),
+                type: MessageType.FILE_UNLOCKED,
+                payload: { sessionId, path }
+            };
+            this.broadcastToSession(session, unlocked); // includes sender? Yes, or maybe exclude ws. Wait, sender already knows, but let's broadcast to all.
+        }
+    }
+
+    private handleFileLockHeartbeat(ws: WebSocket, message: FileLockHeartbeatMessage): void {
+        const { sessionId, path } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session) return;
+        
+        const clientId = session.getClientId(ws);
+        if (!clientId) return;
+
+        session.refreshLock(path, clientId);
     }
 
     private handleFileSyncEvent(ws: WebSocket, message: Message): void {
@@ -294,24 +413,55 @@ class CollaborationServer {
                 return;
             }
 
-            console.log(`[INFO] ${message.type}: ${pathStr}`);
+            const clientId = session.getClientId(ws);
+            if (!clientId) return;
 
-            // Broadcast to everyone else in the session
-            const allClients = session.getClients();
-            let recipientsCount = 0;
-            let recipientStates = [];
-            for (const client of allClients) {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    this.sendMessage(client, message);
-                    recipientsCount++;
-                    recipientStates.push(`client_readyState=${client.readyState}`);
-                } else if (client !== ws) {
-                    recipientStates.push(`client_readyState=${client.readyState}`);
+            const path = payload.path || payload.oldPath;
+            if (!path) return;
+
+            // Enforce Locks for FILE_EDIT and FILE_CHANGED
+            if (message.type === MessageType.FILE_EDIT || message.type === MessageType.FILE_CHANGED) {
+                const lock = session.getLock(path);
+                if (lock && lock.ownerClientId !== clientId) {
+                    this.sendError(ws, message, 'FILE_LOCKED', `File is locked by ${lock.ownerName}`);
+                    return;
                 }
             }
-            if (message.type === MessageType.FILE_CHANGED) {
-                console.log(`[TRACE 7] BROADCAST\nsessionId=${sessionId}\npath=${payload.path}\nrecipientCount=${recipientsCount}\n${recipientStates.join('\n')}`);
+
+            // Enforce Revision and State
+            const state = session.getFileState(path);
+            const currentRev = state ? state.revision : 0;
+            const baseRev = payload.baseRevision;
+
+            if (message.type !== MessageType.FILE_CREATED && baseRev !== undefined && baseRev !== currentRev) {
+                this.sendError(ws, message, 'REVISION_CONFLICT', `Revision conflict for ${path}. Expected ${currentRev}, got ${baseRev}.`);
+                return;
             }
+
+            // Update Authoritative State
+            if (message.type === MessageType.FILE_DELETED) {
+                session.updateFileState(path, false, clientId);
+            } else if (message.type === MessageType.FILE_CREATED) {
+                session.updateFileState(path, true, clientId);
+            } else if (message.type === MessageType.FILE_RENAMED) {
+                session.updateFileState(payload.oldPath, false, clientId);
+                session.updateFileState(payload.newPath, true, clientId);
+            } else {
+                session.updateFileState(path, true, clientId); // FILE_EDIT / FILE_CHANGED
+            }
+
+            // Sync new revision to payload
+            if (message.type === MessageType.FILE_RENAMED) {
+                payload.revision = session.getFileState(payload.newPath)?.revision || 0;
+            } else {
+                payload.revision = session.getFileState(path)?.revision || 0;
+            }
+
+            console.log(`[INFO] ${message.type}: ${pathStr} (New Revision: ${payload.revision})`);
+
+            // Broadcast to everyone else in the session
+            this.broadcastToSession(session, message, ws);
+
         } catch (error) {
             console.error(`[ERROR] Failed to handle ${message.type}:`, error);
             this.sendError(ws, message, 'SERVER_ERROR', 'Internal server error processing file sync event.');
@@ -344,6 +494,15 @@ class CollaborationServer {
             payload: null
         };
         this.sendMessage(ws, pongMessage);
+    }
+
+    private broadcastToSession(session: Session, message: Message, excludeWs?: WebSocket): void {
+        const clients = session.getClients();
+        for (const client of clients) {
+            if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
+                this.sendMessage(client, message);
+            }
+        }
     }
 
     private sendMessage(ws: WebSocket, message: Message): void {

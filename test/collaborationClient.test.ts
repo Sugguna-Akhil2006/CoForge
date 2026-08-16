@@ -4,6 +4,14 @@ import { MessageType } from '../src/protocol/MessageType';
 import { NetworkError } from '../src/network/NetworkError';
 import { EventEmitter } from 'events';
 
+jest.mock('vscode', () => ({
+    workspace: {
+        getConfiguration: jest.fn().mockReturnValue({
+            get: jest.fn().mockReturnValue('wss://coforge.onrender.com')
+        })
+    }
+}), { virtual: true });
+
 // Create a mock WebSocketClient that we can control
 class MockWebSocketClient extends EventEmitter {
     public connect = jest.fn();

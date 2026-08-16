@@ -2,7 +2,14 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ILogger } from '../network/WebSocketClient';
 import { CollaborationClient } from '../network/CollaborationClient';
-import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage } from '../protocol/Message';
+import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage, FileEditMessage, Message } from '../protocol/Message';
+
+interface LocalFileState {
+    revision: number;
+    exists: boolean;
+    lockedByClientId?: string;
+    lockedByName?: string;
+}
 
 export class WorkspaceSyncService {
     private readonly MAX_FILE_SIZE = 1 * 1024 * 1024; // 1 MB
@@ -10,11 +17,28 @@ export class WorkspaceSyncService {
     private applyingRemoteChanges = new Set<string>();
     private disposables: vscode.Disposable[] = [];
 
+    // Local file revision tracking
+    private fileStates = new Map<string, LocalFileState>();
+
+    // Debouncing/batching for edits
+    private editTimers = new Map<string, NodeJS.Timeout>();
+    private pendingEdits = new Map<string, Array<{range: {start: {line: number, character: number}, end: {line: number, character: number}}, text: string}>>();
+    private readonly EDIT_DEBOUNCE_MS = 50;
+
     // Bound listeners for easy removal
     private readonly boundOnRemoteFileCreated: (msg: FileCreatedMessage) => void;
     private readonly boundOnRemoteFileChanged: (msg: FileChangedMessage) => void;
     private readonly boundOnRemoteFileDeleted: (msg: FileDeletedMessage) => void;
     private readonly boundOnRemoteFileRenamed: (msg: FileRenamedMessage) => void;
+    private readonly boundOnRemoteFileEdit: (msg: FileEditMessage) => void;
+    
+    // Lock event listeners
+    private readonly boundOnLockGranted: (msg: Message) => void;
+    private readonly boundOnLockDenied: (msg: Message) => void;
+    private readonly boundOnUnlocked: (msg: Message) => void;
+
+    private lockHeartbeatTimer: NodeJS.Timeout | null = null;
+    private statusBarItem: vscode.StatusBarItem;
 
     constructor(
         private readonly sessionId: string,
@@ -25,6 +49,15 @@ export class WorkspaceSyncService {
         this.boundOnRemoteFileChanged = this.onRemoteFileChanged.bind(this);
         this.boundOnRemoteFileDeleted = this.onRemoteFileDeleted.bind(this);
         this.boundOnRemoteFileRenamed = this.onRemoteFileRenamed.bind(this);
+        this.boundOnRemoteFileEdit = this.onRemoteFileEdit.bind(this);
+        
+        this.boundOnLockGranted = this.onLockGranted.bind(this);
+        this.boundOnLockDenied = this.onLockDenied.bind(this);
+        this.boundOnUnlocked = this.onUnlocked.bind(this);
+
+        const alignment = vscode.StatusBarAlignment ? vscode.StatusBarAlignment.Right : 2;
+        this.statusBarItem = vscode.window.createStatusBarItem(alignment, 100);
+        this.disposables.push(this.statusBarItem);
     }
 
     private log(message: string): void {
@@ -65,8 +98,6 @@ export class WorkspaceSyncService {
                 return;
             }
             const relativePath = vscode.workspace.asRelativePath(event.document.uri, false).replace(/\\/g, '/');
-            const content = event.document.getText();
-            this.log(`[TRACE 1] onDidChangeTextDocument FIRED\npath=${event.document.uri.fsPath}\ntextLength=${content.length}\nsessionId=${this.sessionId}`);
 
             // Ignore excluded folders
             if (relativePath.includes('.git/') || relativePath.includes('node_modules/') || relativePath.includes('.vscode/')) {
@@ -74,12 +105,46 @@ export class WorkspaceSyncService {
             }
 
             if (this.applyingRemoteChanges.has(relativePath)) {
-                this.log(`[DEBUG] Ignoring local text change event for ${relativePath} (remote apply guard active)`);
+                this.log(`[SYNC DEBUG] SUPPRESSED REMOTE EVENT\n[SYNC DEBUG] path=${relativePath}`);
                 return;
             }
 
-            this.log(`[TRACE 2] sendFileChanged CALLED\npath=${relativePath}\ncontentLength=${content.length}\nsessionId=${this.sessionId}`);
-            this.collaborationClient.sendFileChanged(this.sessionId, relativePath, content);
+            // Convert contentChanges to protocol format
+            const changes = event.contentChanges.map(c => ({
+                range: {
+                    start: { line: c.range.start.line, character: c.range.start.character },
+                    end: { line: c.range.end.line, character: c.range.end.character }
+                },
+                text: c.text
+            }));
+
+            if (changes.length === 0) return;
+
+            // Accumulate edits
+            let currentEdits = this.pendingEdits.get(relativePath) || [];
+            currentEdits.push(...changes);
+            this.pendingEdits.set(relativePath, currentEdits);
+
+            // Clear existing timer
+            if (this.editTimers.has(relativePath)) {
+                clearTimeout(this.editTimers.get(relativePath)!);
+            }
+
+            // Set debounce timer
+            const timer = setTimeout(() => {
+                this.editTimers.delete(relativePath);
+                const batchedEdits = this.pendingEdits.get(relativePath);
+                this.pendingEdits.delete(relativePath);
+                
+                if (batchedEdits && batchedEdits.length > 0) {
+                    const state = this.getFileState(relativePath);
+                    const rev = state.revision;
+                    this.collaborationClient.sendFileEdit(this.sessionId, relativePath, rev, rev + 1, batchedEdits);
+                    this.log(`[SYNC DEBUG] LOCAL EDIT\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${rev}\n[SYNC DEBUG] changes=${batchedEdits.length}`);
+                }
+            }, this.EDIT_DEBOUNCE_MS);
+
+            this.editTimers.set(relativePath, timer);
         }));
 
         this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
@@ -93,8 +158,86 @@ export class WorkspaceSyncService {
         this.collaborationClient.on('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.on('fileDeleted', this.boundOnRemoteFileDeleted);
         this.collaborationClient.on('fileRenamed', this.boundOnRemoteFileRenamed);
+        this.collaborationClient.on('fileEdit', this.boundOnRemoteFileEdit);
+        
+        this.collaborationClient.on('fileLockGranted', this.boundOnLockGranted);
+        this.collaborationClient.on('fileLockDenied', this.boundOnLockDenied);
+        this.collaborationClient.on('fileUnlocked', this.boundOnUnlocked);
+
+        // Active editor changes -> request lock
+        this.disposables.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+            this.handleActiveEditorChange(editor);
+        }));
+
+        // Document closed -> release lock
+        this.disposables.push(vscode.workspace.onDidCloseTextDocument(doc => {
+            if (doc.uri.scheme === 'file') {
+                const relativePath = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, '/');
+                this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
+            }
+        }));
+
+        this.startLockHeartbeat();
 
         this.log('[INFO] WorkspaceSyncService started.');
+        
+        // Initial lock request if there's an active editor
+        if (vscode.window.activeTextEditor) {
+            this.handleActiveEditorChange(vscode.window.activeTextEditor);
+        }
+    }
+
+    public initializeRevisions(snapshotRevision: number, paths: string[]): void {
+        for (const path of paths) {
+            const relativePath = path.replace(/\\/g, '/');
+            this.fileStates.set(relativePath, {
+                revision: snapshotRevision,
+                exists: true
+            });
+        }
+        this.log(`[INFO] Initialized revisions to ${snapshotRevision} for ${paths.length} files`);
+    }
+
+    private getFileState(relativePath: string): LocalFileState {
+        let state = this.fileStates.get(relativePath);
+        if (!state) {
+            state = { revision: 0, exists: true };
+            this.fileStates.set(relativePath, state);
+        }
+        return state;
+    }
+
+    private startLockHeartbeat() {
+        this.lockHeartbeatTimer = setInterval(() => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.uri.scheme === 'file') {
+                const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+                const state = this.getFileState(relativePath);
+                if (state.lockedByClientId === this.collaborationClient.clientId) {
+                    this.collaborationClient.sendFileLockHeartbeat(this.sessionId, relativePath);
+                }
+            }
+        }, 10000);
+    }
+
+    private handleActiveEditorChange(editor: vscode.TextEditor | undefined) {
+        if (!editor || editor.document.uri.scheme !== 'file') {
+            this.statusBarItem.hide();
+            return;
+        }
+
+        const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+        
+        // Check current lock state
+        const state = this.getFileState(relativePath);
+        if (state.lockedByClientId && state.lockedByClientId !== this.collaborationClient.clientId) {
+            this.statusBarItem.text = `$(lock) Locked by ${state.lockedByName}`;
+            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            this.statusBarItem.show();
+        } else {
+            this.collaborationClient.requestFileLock(this.sessionId, relativePath);
+            this.statusBarItem.hide();
+        }
     }
 
     private async handleLocalFileRenamed(oldUri: vscode.Uri, newUri: vscode.Uri, rootPath: string): Promise<void> {
@@ -112,7 +255,11 @@ export class WorkspaceSyncService {
         }
 
         this.log(`[INFO] Local file renamed: ${oldRelativePath} -> ${newRelativePath}`);
-        this.collaborationClient.sendFileRenamed(this.sessionId, oldRelativePath, newRelativePath);
+        const state = this.getFileState(oldRelativePath);
+        const baseRev = state.revision;
+        const nextRev = baseRev + 1;
+        state.revision = nextRev;
+        this.collaborationClient.sendFileRenamed(this.sessionId, oldRelativePath, newRelativePath, baseRev, nextRev);
     }
 
     private async handleLocalFileEvent(uri: vscode.Uri, rootPath: string, eventType: 'CREATE' | 'CHANGE' | 'DELETE'): Promise<void> {
@@ -131,7 +278,11 @@ export class WorkspaceSyncService {
         try {
             if (eventType === 'DELETE') {
                 this.log(`[INFO] Local file deleted: ${relativePath}`);
-                this.collaborationClient.sendFileDeleted(this.sessionId, relativePath);
+                const state = this.getFileState(relativePath);
+                const nextRev = state.revision + 1;
+                state.revision = nextRev;
+                state.exists = false;
+                this.collaborationClient.sendFileDeleted(this.sessionId, relativePath, state.revision, nextRev);
                 return;
             }
 
@@ -153,12 +304,18 @@ export class WorkspaceSyncService {
 
             const content = new TextDecoder('utf-8').decode(contentArray);
 
+            const state = this.getFileState(relativePath);
+            const baseRev = state.revision;
+            const nextRev = baseRev + 1;
+            state.revision = nextRev;
+
             if (eventType === 'CREATE') {
                 this.log(`[INFO] Local file created: ${relativePath}`);
-                this.collaborationClient.sendFileCreated(this.sessionId, relativePath, content);
+                state.exists = true;
+                this.collaborationClient.sendFileCreated(this.sessionId, relativePath, content, baseRev, nextRev);
             } else if (eventType === 'CHANGE') {
                 this.log(`[INFO] Local file changed: ${relativePath}`);
-                this.collaborationClient.sendFileChanged(this.sessionId, relativePath, content);
+                this.collaborationClient.sendFileChanged(this.sessionId, relativePath, content, baseRev, nextRev);
             }
 
         } catch (error) {
@@ -167,16 +324,127 @@ export class WorkspaceSyncService {
     }
 
     private async onRemoteFileCreated(message: FileCreatedMessage): Promise<void> {
-        await this.applyRemoteFileEvent(message.payload.path, message.payload.content, 'CREATE');
+        const { path: relativePath, revision } = message.payload;
+        const state = this.getFileState(relativePath);
+        if (revision > state.revision) {
+            state.revision = revision;
+            state.exists = true;
+            await this.applyRemoteFileEvent(relativePath, message.payload.content, 'CREATE');
+        }
     }
 
     private async onRemoteFileChanged(message: FileChangedMessage): Promise<void> {
         this.log(`[TRACE 9] REMOTE FILE_CHANGED HANDLER\npath=${message.payload.path}\ncontentLength=${message.payload.content.length}`);
-        await this.applyRemoteFileEvent(message.payload.path, message.payload.content, 'CHANGE');
+        const { path: relativePath, revision } = message.payload;
+        const state = this.getFileState(relativePath);
+        if (revision > state.revision) {
+            state.revision = revision;
+            state.exists = true;
+            await this.applyRemoteFileEvent(relativePath, message.payload.content, 'CHANGE');
+        }
     }
 
     private async onRemoteFileDeleted(message: FileDeletedMessage): Promise<void> {
-        await this.applyRemoteFileEvent(message.payload.path, undefined, 'DELETE');
+        const { path: relativePath, revision } = message.payload;
+        const state = this.getFileState(relativePath);
+        
+        if (revision > state.revision) {
+            state.revision = revision;
+            state.exists = false;
+
+            // Close active editor if open
+            for (const editor of vscode.window.visibleTextEditors) {
+                if (editor.document.uri.scheme === 'file') {
+                    const editorPath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+                    if (editorPath === relativePath) {
+                        vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                    }
+                }
+            }
+
+            await this.applyRemoteFileEvent(relativePath, undefined, 'DELETE');
+        }
+    }
+
+    private async onRemoteFileEdit(message: FileEditMessage): Promise<void> {
+        const { path: relativePath, revision, changes } = message.payload;
+        this.log(`[SYNC DEBUG] REMOTE EDIT\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${revision}\n[SYNC DEBUG] changes=${changes.length}`);
+
+        const state = this.getFileState(relativePath);
+        if (revision > state.revision) {
+            state.revision = revision;
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) return;
+
+        const rootUri = workspaceFolders[0].uri;
+        const fileUri = vscode.Uri.joinPath(rootUri, ...relativePath.split('/'));
+
+        this.applyingRemoteChanges.add(relativePath);
+        this.log(`[SYNC DEBUG] APPLYING REMOTE EDIT\n[SYNC DEBUG] path=${relativePath}`);
+
+        try {
+            const edit = new vscode.WorkspaceEdit();
+            
+            for (const change of changes) {
+                const range = new vscode.Range(
+                    change.range.start.line, change.range.start.character,
+                    change.range.end.line, change.range.end.character
+                );
+                edit.replace(fileUri, range, change.text);
+            }
+
+            await vscode.workspace.applyEdit(edit);
+
+            this.log(`[SYNC DEBUG] REMOTE EDIT APPLIED\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${revision}`);
+        } catch (error) {
+            this.log(`[ERROR] Failed to apply remote edit for ${relativePath}: ${error}`);
+        } finally {
+            // Delay removing the guard so that onDidChangeTextDocument event gets suppressed correctly
+            setTimeout(() => {
+                this.applyingRemoteChanges.delete(relativePath);
+            }, 50);
+        }
+    }
+
+    private onLockGranted(message: Message): void {
+        const payload = message.payload as any;
+        const state = this.getFileState(payload.path);
+        state.lockedByClientId = payload.ownerClientId;
+        state.lockedByName = payload.ownerName;
+        
+        const editor = vscode.window.activeTextEditor;
+        if (editor && vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/') === payload.path) {
+            this.statusBarItem.hide();
+        }
+    }
+
+    private onLockDenied(message: Message): void {
+        const payload = message.payload as any;
+        const state = this.getFileState(payload.path);
+        state.lockedByClientId = payload.ownerClientId;
+        state.lockedByName = payload.ownerName;
+
+        const editor = vscode.window.activeTextEditor;
+        if (editor && vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/') === payload.path) {
+            this.statusBarItem.text = `$(lock) Locked by ${payload.ownerName}`;
+            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            this.statusBarItem.show();
+        }
+    }
+
+    private onUnlocked(message: Message): void {
+        const payload = message.payload as any;
+        const state = this.getFileState(payload.path);
+        state.lockedByClientId = undefined;
+        state.lockedByName = undefined;
+
+        const editor = vscode.window.activeTextEditor;
+        if (editor && vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/') === payload.path) {
+            // Attempt to acquire lock again
+            this.collaborationClient.requestFileLock(this.sessionId, payload.path);
+        }
     }
 
     private async onRemoteFileRenamed(message: FileRenamedMessage): Promise<void> {
@@ -264,10 +532,33 @@ export class WorkspaceSyncService {
                 }
 
                 if (content !== undefined) {
-                    const encodedContent = new TextEncoder().encode(content);
-                    await vscode.workspace.fs.writeFile(fileUri, encodedContent);
+                    let wasAppliedToOpenEditor = false;
+
+                    // Avoid "Save + Overwrite" prompt by applying to open editor if available
+                    for (const editor of vscode.window.visibleTextEditors) {
+                        if (editor.document.uri.scheme === 'file') {
+                            const editorPath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+                            if (editorPath === relativePath) {
+                                const edit = new vscode.WorkspaceEdit();
+                                const fullRange = new vscode.Range(
+                                    editor.document.positionAt(0),
+                                    editor.document.positionAt(editor.document.getText().length)
+                                );
+                                edit.replace(editor.document.uri, fullRange, content);
+                                await vscode.workspace.applyEdit(edit);
+                                wasAppliedToOpenEditor = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!wasAppliedToOpenEditor) {
+                        const encodedContent = new TextEncoder().encode(content);
+                        await vscode.workspace.fs.writeFile(fileUri, encodedContent);
+                    }
+
                     if (eventType === 'CHANGE') {
-                        this.log(`[TRACE 10A] APPLY EDIT RESULT\nsuccess=true`);
+                        this.log(`[TRACE 10A] APPLY EDIT RESULT\nsuccess=true\nwasAppliedToOpenEditor=${wasAppliedToOpenEditor}`);
                     }
                 }
             }
@@ -331,5 +622,6 @@ export class WorkspaceSyncService {
         this.collaborationClient.removeListener('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.removeListener('fileDeleted', this.boundOnRemoteFileDeleted);
         this.collaborationClient.removeListener('fileRenamed', this.boundOnRemoteFileRenamed);
+        this.collaborationClient.removeListener('fileEdit', this.boundOnRemoteFileEdit);
     }
 }

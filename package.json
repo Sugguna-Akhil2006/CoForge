@@ -2,7 +2,7 @@
   "name": "coforge",
   "displayName": "CoForge",
   "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "publisher": "coforge",
   "icon": "icon.png",
   "repository": {

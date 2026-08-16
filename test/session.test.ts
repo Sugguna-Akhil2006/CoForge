@@ -2,6 +2,7 @@ import { SessionId } from '../src/collaboration/session/SessionId';
 import { SessionState } from '../src/collaboration/session/SessionState';
 import { CollaborationSession } from '../src/collaboration/session/CollaborationSession';
 import { SessionManager } from '../src/collaboration/session/SessionManager';
+import { CollaborationClient } from '../src/network/CollaborationClient';
 
 // Mock vscode module
 const mockWorkspaceFolders = [{ uri: { toString: () => 'file:///mock/workspace' } }];
@@ -23,12 +24,26 @@ jest.mock('vscode', () => ({
         onDidSaveTextDocument: jest.fn().mockReturnValue({ dispose: jest.fn() }),
         onDidCreateFiles: jest.fn().mockReturnValue({ dispose: jest.fn() }),
         onDidDeleteFiles: jest.fn().mockReturnValue({ dispose: jest.fn() }),
-        onDidRenameFiles: jest.fn().mockReturnValue({ dispose: jest.fn() })
+        onDidRenameFiles: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        onDidCloseTextDocument: jest.fn().mockReturnValue({ dispose: jest.fn() })
     },
     window: {
         showInformationMessage: jest.fn(),
         showWarningMessage: jest.fn(),
-    }
+        createStatusBarItem: jest.fn().mockReturnValue({
+            show: jest.fn(),
+            hide: jest.fn(),
+            dispose: jest.fn(),
+            text: '',
+            backgroundColor: undefined
+        }),
+        onDidChangeActiveTextEditor: jest.fn().mockReturnValue({ dispose: jest.fn() })
+    },
+    StatusBarAlignment: {
+        Left: 1,
+        Right: 2
+    },
+    ThemeColor: jest.fn()
 }), { virtual: true });
 
 describe('SessionId', () => {
@@ -106,7 +121,7 @@ describe('SessionManager', () => {
             requestWorkspaceSnapshot: jest.fn().mockResolvedValue({ payload: { files: [] } }),
             dispose: jest.fn()
         };
-        return mockClient;
+        return mockClient as unknown as CollaborationClient;
     };
 
     beforeEach(() => {
@@ -149,7 +164,7 @@ describe('SessionManager', () => {
             requestWorkspaceSnapshot: jest.fn(),
             dispose: jest.fn()
         };
-        const failingMockCreateClient = () => mockClient;
+        const failingMockCreateClient = () => mockClient as unknown as CollaborationClient;
         const failingManager = new SessionManager(mockLogger, failingMockCreateClient);
 
         await expect(failingManager.startSession()).rejects.toThrow('Connection failed');
@@ -171,7 +186,7 @@ describe('SessionManager', () => {
             requestWorkspaceSnapshot: jest.fn(),
             dispose: jest.fn()
         };
-        const failingMockCreateClient = () => mockClient;
+        const failingMockCreateClient = () => mockClient as unknown as CollaborationClient;
         const failingManager = new SessionManager(mockLogger, failingMockCreateClient);
 
         await expect(failingManager.startSession()).rejects.toThrow('PING request timed out');
@@ -195,7 +210,7 @@ describe('SessionManager', () => {
             requestWorkspaceSnapshot: jest.fn(),
             dispose: jest.fn()
         };
-        const slowMockCreateClient = () => mockClient;
+        const slowMockCreateClient = () => mockClient as unknown as CollaborationClient;
         const manager = new SessionManager(mockLogger, slowMockCreateClient);
 
         // Start the session, which will block on connect()
@@ -268,7 +283,7 @@ describe('SessionManager', () => {
                 dispose: jest.fn()
             };
             mockClient = client;
-            return client;
+            return client as unknown as CollaborationClient;
         };
 
         const manager = new SessionManager(mockLogger, retryMockCreateClient);

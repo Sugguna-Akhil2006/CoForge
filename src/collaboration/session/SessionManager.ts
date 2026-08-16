@@ -184,6 +184,9 @@ export class SessionManager {
                     // Start live sync service for the guest BEFORE applying snapshot to set guards
                     this.syncService = new WorkspaceSyncService(sessionId, this.collaborationClient, this.logger);
                     this.syncService.start();
+                    
+                    const snapshotRevision = snapshotMsg.payload.snapshotRevision || 0;
+                    this.syncService.initializeRevisions(snapshotRevision, this.workspaceSnapshot.map((f: any) => f.path));
 
                     // Set remote-apply guards for all snapshot file paths
                     const guardedPaths: string[] = [];

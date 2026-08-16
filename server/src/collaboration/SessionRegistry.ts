@@ -44,7 +44,7 @@ export class SessionRegistry {
         return this.sessions.has(sessionId);
     }
 
-    public addClient(sessionId: string, ws: WebSocket): void {
+    public addClient(sessionId: string, ws: WebSocket): string {
         if (this.reverseClientMap.has(ws)) {
             throw new SessionError('Client is already in a session');
         }
@@ -52,20 +52,23 @@ export class SessionRegistry {
         if (session.hasClient(ws)) {
             throw new SessionError('Client is already in the session');
         }
-        session.addClient(ws);
+        const clientId = crypto.randomUUID();
+        session.addClient(clientId, ws);
         this.reverseClientMap.set(ws, sessionId);
-        this.logState(`addClient - Added to ${sessionId}`);
+        this.logState(`addClient - Added to ${sessionId} with clientId ${clientId}`);
+        return clientId;
     }
 
-    public removeClient(sessionId: string, ws: WebSocket): void {
+    public removeClient(sessionId: string, ws: WebSocket): string {
         const session = this.getSession(sessionId);
         if (!session.hasClient(ws)) {
             throw new SessionError('Client is not in the session');
         }
-        session.removeClient(ws);
+        const clientId = session.removeClient(ws);
         this.reverseClientMap.delete(ws);
         console.log(`[SESSION DEBUG] Session ${sessionId} retained after client disconnect.`);
         this.logState(`removeClient - Removed from ${sessionId}`);
+        return clientId || '';
     }
 
     public deleteSession(sessionId: string): void {
@@ -90,11 +93,13 @@ export class SessionRegistry {
         return this.sessions.get(sessionId);
     }
 
-    public removeClientFromAnySession(ws: WebSocket): void {
+    public removeClientFromAnySession(ws: WebSocket): { sessionId: string, clientId: string } | undefined {
         const sessionId = this.reverseClientMap.get(ws);
         if (sessionId) {
-            this.removeClient(sessionId, ws);
+            const clientId = this.removeClient(sessionId, ws);
             this.logState(`removeClientFromAnySession - Removed from ${sessionId}`);
+            return { sessionId, clientId };
         }
+        return undefined;
     }
 }

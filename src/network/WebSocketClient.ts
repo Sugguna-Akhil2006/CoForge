@@ -13,7 +13,8 @@ export interface ILogger {
 export class WebSocketClient extends EventEmitter {
     private ws: WebSocket | null = null;
     private state: ConnectionState = ConnectionState.DISCONNECTED;
-
+    public socketId: string | null = null;
+    
     constructor(private readonly logger?: ILogger) {
         super();
     }
@@ -48,9 +49,6 @@ export class WebSocketClient extends EventEmitter {
         }
     }
 
-    /**
-     * Connects to the given WebSocket URL asynchronously.
-     */
     public async connect(url: string): Promise<void> {
         if (this.state !== ConnectionState.DISCONNECTED) {
             throw new NetworkError('Cannot connect: already connected or connecting.');
@@ -63,28 +61,55 @@ export class WebSocketClient extends EventEmitter {
         }
 
         this.setState(ConnectionState.CONNECTING);
-        this.log(`[CoForge DEBUG] Attempting WebSocket connection = ${url}`);
+        this.log(`[WS DEBUG] connect() called`);
+        this.log(`[WS DEBUG] URL = ${url}`);
 
         return new Promise((resolve, reject) => {
-            let timeoutId: NodeJS.Timeout;
+            let settled = false;
+            let ws: WebSocket;
 
+            this.log(`[WS DEBUG] creating WebSocket`);
             try {
-                this.ws = new WebSocket(url);
+                this.socketId = require('crypto').randomUUID();
+                ws = new WebSocket(url);
+                this.log(`[WS DEBUG] WebSocket object created`);
+                this.log(`[WS DEBUG] readyState immediately = ${ws.readyState}`);
             } catch (err) {
                 this.setState(ConnectionState.DISCONNECTED);
                 reject(new NetworkError('Failed to instantiate WebSocket.'));
                 return;
             }
 
+            const timeoutId = setTimeout(() => {
+                this.log(`[WS DEBUG] timeout fired`);
+                this.log(`[WS DEBUG] final readyState = ${ws.readyState}`);
+                if (settled) return;
+                
+                settled = true;
+                this.setState(ConnectionState.DISCONNECTED);
+                ws.removeAllListeners();
+                
+                try { ws.close(); } catch (e) {}
+                
+                reject(new NetworkError(`WebSocket connection timeout: ${url}`));
+            }, 60000);
+
             const onOpen = () => {
+                this.log(`[WS DEBUG] OPEN event received`);
+                if (settled) return;
+                
                 clearTimeout(timeoutId);
+                settled = true;
+
+                this.ws = ws;
                 this.setState(ConnectionState.CONNECTED);
-                this.log(`[CoForge DEBUG] WebSocket OPEN: ${url}`);
+                this.log(`[WS DEBUG] resolving connect promise`);
                 this.emit('connected');
                 resolve();
             };
 
             const onError = (error: any) => {
+                this.log(`[WS DEBUG] ERROR event received`);
                 let errorMsg = error instanceof Error ? error.message : '';
                 if (!errorMsg || errorMsg.trim() === '') {
                     errorMsg = error?.code || error?.name || JSON.stringify(error) || String(error) || 'Unknown error';
@@ -93,43 +118,40 @@ export class WebSocketClient extends EventEmitter {
                 const fullDetails = `name=${error?.name}, code=${error?.code}, message=${error?.message}, cause=${error?.cause}`;
                 this.log(`[CoForge DEBUG] WebSocket ERROR: ${fullDetails} | Raw string: ${String(error)}`);
                 
-                if (this.state === ConnectionState.CONNECTING) {
-                    clearTimeout(timeoutId);
-                    this.setState(ConnectionState.DISCONNECTED);
-                    this.cleanup();
-                    reject(new NetworkError(`WebSocket connection failed: ${errorMsg}`));
-                } else {
+                if (settled) {
                     this.emit('error', new NetworkError(errorMsg));
+                    return;
                 }
+                
+                clearTimeout(timeoutId);
+                settled = true;
+                this.setState(ConnectionState.DISCONNECTED);
+                ws.removeAllListeners();
+                
+                try { ws.close(); } catch (e) {}
+                
+                reject(new NetworkError(`WebSocket connection failed: ${errorMsg}`));
             };
 
             const onClose = (code: number, reason: Buffer) => {
+                this.log(`[WS DEBUG] CLOSE event received`);
                 const wasClean = code === 1000;
                 this.log(`[CoForge DEBUG] WebSocket CLOSE: code=${code}, reason=${reason.toString()}, wasClean=${wasClean}`);
                 
-                if (this.state === ConnectionState.CONNECTING) {
-                    clearTimeout(timeoutId);
-                }
-                
-                this.setState(ConnectionState.DISCONNECTED);
-                this.cleanup();
-                this.emit('disconnected', { code, reason: reason.toString(), wasClean });
-            };
-
-            // Set 10 second timeout
-            timeoutId = setTimeout(() => {
-                if (this.state === ConnectionState.CONNECTING) {
-                    this.log(`[CoForge DEBUG] WebSocket connection timeout: ${url}`);
+                if (settled) {
                     this.setState(ConnectionState.DISCONNECTED);
                     this.cleanup();
-                    
-                    if (this.ws) {
-                        try { this.ws.close(); } catch (e) {}
-                    }
-                    
-                    reject(new NetworkError(`WebSocket connection timeout: ${url}`));
+                    this.emit('disconnected', { code, reason: reason.toString(), wasClean });
+                    return;
                 }
-            }, 10000);
+                
+                clearTimeout(timeoutId);
+                settled = true;
+                this.setState(ConnectionState.DISCONNECTED);
+                ws.removeAllListeners();
+                
+                reject(new NetworkError(`WebSocket closed before connection established`));
+            };
 
             const onMessage = (data: Buffer | ArrayBuffer | Buffer[] | string, isBinary: boolean) => {
                 try {
@@ -152,10 +174,10 @@ export class WebSocketClient extends EventEmitter {
                 }
             };
 
-            this.ws.on('open', onOpen);
-            this.ws.on('error', onError);
-            this.ws.on('close', onClose);
-            this.ws.on('message', onMessage);
+            ws.on('open', onOpen);
+            ws.on('error', onError);
+            ws.on('close', onClose);
+            ws.on('message', onMessage);
         });
     }
 

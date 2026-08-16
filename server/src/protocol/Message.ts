@@ -29,6 +29,7 @@ export interface SessionCreatedMessage extends BaseMessage {
     type: MessageType.SESSION_CREATED;
     payload: {
         sessionId: string;
+        clientId: string;
     };
 }
 
@@ -43,6 +44,7 @@ export interface SessionJoinedMessage extends BaseMessage {
     type: MessageType.SESSION_JOINED;
     payload: {
         sessionId: string;
+        clientId: string;
     };
 }
 
@@ -71,6 +73,7 @@ export interface WorkspaceSnapshotMessage extends BaseMessage {
     type: MessageType.WORKSPACE_SNAPSHOT;
     payload: {
         sessionId: string;
+        snapshotRevision: number;
         files: Array<{ path: string; content: string }>;
     };
 }
@@ -80,6 +83,9 @@ export interface FileCreatedMessage extends BaseMessage {
     payload: {
         sessionId: string;
         path: string;
+        baseRevision: number;
+        revision: number;
+        clientId: string;
         content: string;
     };
 }
@@ -89,6 +95,9 @@ export interface FileChangedMessage extends BaseMessage {
     payload: {
         sessionId: string;
         path: string;
+        baseRevision: number;
+        revision: number;
+        clientId: string;
         content: string;
     };
 }
@@ -98,6 +107,9 @@ export interface FileDeletedMessage extends BaseMessage {
     payload: {
         sessionId: string;
         path: string;
+        baseRevision: number;
+        revision: number;
+        clientId: string;
     };
 }
 
@@ -107,6 +119,9 @@ export interface FileRenamedMessage extends BaseMessage {
         sessionId: string;
         oldPath: string;
         newPath: string;
+        baseRevision: number;
+        revision: number;
+        clientId: string;
     };
 }
 
@@ -115,6 +130,77 @@ export interface ErrorMessage extends BaseMessage {
     payload: {
         code: string;
         message: string;
+    };
+}
+
+export interface FileEditMessage extends BaseMessage {
+    type: MessageType.FILE_EDIT;
+    payload: {
+        sessionId: string;
+        path: string;
+        baseRevision: number;
+        revision: number;
+        clientId: string;
+        changes: Array<{
+            range: {
+                start: { line: number; character: number };
+                end: { line: number; character: number };
+            };
+            text: string;
+        }>;
+    };
+}
+
+export interface RequestFileLockMessage extends BaseMessage {
+    type: MessageType.REQUEST_FILE_LOCK;
+    payload: {
+        sessionId: string;
+        path: string;
+    };
+}
+
+export interface FileLockGrantedMessage extends BaseMessage {
+    type: MessageType.FILE_LOCK_GRANTED;
+    payload: {
+        sessionId: string;
+        path: string;
+        ownerClientId: string;
+        ownerName: string;
+    };
+}
+
+export interface FileLockDeniedMessage extends BaseMessage {
+    type: MessageType.FILE_LOCK_DENIED;
+    payload: {
+        sessionId: string;
+        path: string;
+        ownerClientId: string;
+        ownerName: string;
+        reason: string;
+    };
+}
+
+export interface ReleaseFileLockMessage extends BaseMessage {
+    type: MessageType.RELEASE_FILE_LOCK;
+    payload: {
+        sessionId: string;
+        path: string;
+    };
+}
+
+export interface FileUnlockedMessage extends BaseMessage {
+    type: MessageType.FILE_UNLOCKED;
+    payload: {
+        sessionId: string;
+        path: string;
+    };
+}
+
+export interface FileLockHeartbeatMessage extends BaseMessage {
+    type: MessageType.FILE_LOCK_HEARTBEAT;
+    payload: {
+        sessionId: string;
+        path: string;
     };
 }
 
@@ -133,4 +219,11 @@ export type Message =
     | FileChangedMessage
     | FileDeletedMessage
     | FileRenamedMessage
+    | FileEditMessage
+    | RequestFileLockMessage
+    | FileLockGrantedMessage
+    | FileLockDeniedMessage
+    | ReleaseFileLockMessage
+    | FileUnlockedMessage
+    | FileLockHeartbeatMessage
     | ErrorMessage;
