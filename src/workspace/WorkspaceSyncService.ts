@@ -2,8 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ILogger } from '../network/WebSocketClient';
 import { CollaborationClient } from '../network/CollaborationClient';
-import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage, FileEditMessage, Message } from '../protocol/Message';
-import { DocumentManager } from '../collaboration/document/DocumentManager';
+import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage, FileEditMessage, Message, SaveRejectedMessage } from '../protocol/Message';
 
 interface LocalFileState {
     revision: number;
@@ -31,7 +30,7 @@ export class WorkspaceSyncService {
     private readonly boundOnRemoteFileChanged: (msg: FileChangedMessage) => void;
     private readonly boundOnRemoteFileDeleted: (msg: FileDeletedMessage) => void;
     private readonly boundOnRemoteFileRenamed: (msg: FileRenamedMessage) => void;
-    private readonly boundOnRemoteFileEdit: (msg: FileEditMessage) => void;
+    private readonly boundOnSaveRejected: (msg: SaveRejectedMessage) => void;
     
     // Lock event listeners
     private readonly boundOnLockGranted: (msg: Message) => void;
@@ -40,8 +39,6 @@ export class WorkspaceSyncService {
 
     private lockHeartbeatTimer: NodeJS.Timeout | null = null;
     private statusBarItem: vscode.StatusBarItem;
-    
-    private documentManager: DocumentManager;
 
     constructor(
         private readonly sessionId: string,
@@ -52,7 +49,7 @@ export class WorkspaceSyncService {
         this.boundOnRemoteFileChanged = this.onRemoteFileChanged.bind(this);
         this.boundOnRemoteFileDeleted = this.onRemoteFileDeleted.bind(this);
         this.boundOnRemoteFileRenamed = this.onRemoteFileRenamed.bind(this);
-        this.boundOnRemoteFileEdit = this.onRemoteFileEdit.bind(this);
+        this.boundOnSaveRejected = this.onSaveRejected.bind(this);
         
         this.boundOnLockGranted = this.onLockGranted.bind(this);
         this.boundOnLockDenied = this.onLockDenied.bind(this);
@@ -61,9 +58,6 @@ export class WorkspaceSyncService {
         const alignment = vscode.StatusBarAlignment ? vscode.StatusBarAlignment.Right : 2;
         this.statusBarItem = vscode.window.createStatusBarItem(alignment, 100);
         this.disposables.push(this.statusBarItem);
-        
-        this.documentManager = new DocumentManager(this.sessionId, this.collaborationClient);
-        this.disposables.push(this.documentManager);
     }
 
     private log(message: string): void {
@@ -91,8 +85,10 @@ export class WorkspaceSyncService {
             await this.handleLocalFileEvent(uri, rootPath, 'CREATE');
         }));
 
-        this.disposables.push(this.watcher.onDidChange(async (uri) => {
-            await this.handleLocalFileEvent(uri, rootPath, 'CHANGE');
+        this.disposables.push(vscode.workspace.onDidSaveTextDocument(async (document) => {
+            if (document.uri.scheme === 'file') {
+                await this.handleLocalFileSaved(document.uri);
+            }
         }));
 
         this.disposables.push(this.watcher.onDidDelete(async (uri) => {
@@ -112,7 +108,7 @@ export class WorkspaceSyncService {
         this.collaborationClient.on('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.on('fileDeleted', this.boundOnRemoteFileDeleted);
         this.collaborationClient.on('fileRenamed', this.boundOnRemoteFileRenamed);
-        this.collaborationClient.on('fileEdit', this.boundOnRemoteFileEdit);
+        this.collaborationClient.on('saveRejected', this.boundOnSaveRejected);
         
         this.collaborationClient.on('fileLockGranted', this.boundOnLockGranted);
         this.collaborationClient.on('fileLockDenied', this.boundOnLockDenied);
@@ -262,13 +258,43 @@ export class WorkspaceSyncService {
                 this.log(`[INFO] Local file created: ${relativePath}`);
                 state.exists = true;
                 this.collaborationClient.sendFileCreated(this.sessionId, relativePath, content, baseRev, nextRev);
-            } else if (eventType === 'CHANGE') {
-                this.log(`[INFO] Local file changed: ${relativePath}`);
-                this.collaborationClient.sendFileChanged(this.sessionId, relativePath, content, baseRev, nextRev);
             }
 
         } catch (error) {
             this.log(`[ERROR] Failed to handle local file event ${eventType} for ${relativePath}: ${error}`);
+        }
+    }
+
+    private async handleLocalFileSaved(uri: vscode.Uri): Promise<void> {
+        const relativePath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
+
+        if (relativePath.includes('.git/') || relativePath.includes('node_modules/') || relativePath.includes('.vscode/')) {
+            return;
+        }
+
+        if (this.applyingRemoteChanges.has(relativePath)) {
+            this.log(`[DEBUG] Ignoring local SAVE event for ${relativePath} (remote apply guard active)`);
+            return;
+        }
+
+        try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            if (stat.type !== vscode.FileType.File || stat.size > this.MAX_FILE_SIZE) {
+                return;
+            }
+
+            const contentArray = await vscode.workspace.fs.readFile(uri);
+            if (this.isLikelyBinary(uri.fsPath, contentArray)) {
+                return;
+            }
+
+            const content = new TextDecoder('utf-8').decode(contentArray);
+            const state = this.getFileState(relativePath);
+            
+            this.log(`[INFO] Local file saved, requesting SAVE_DOCUMENT: ${relativePath} (baseRevision: ${state.revision})`);
+            this.collaborationClient.sendSaveDocument(this.sessionId, relativePath, state.revision, content);
+        } catch (error) {
+            this.log(`[ERROR] Failed to handle local file save for ${relativePath}: ${error}`);
         }
     }
 
@@ -284,12 +310,22 @@ export class WorkspaceSyncService {
 
     private async onRemoteFileChanged(message: FileChangedMessage): Promise<void> {
         this.log(`[TRACE 9] REMOTE FILE_CHANGED HANDLER\npath=${message.payload.path}\ncontentLength=${message.payload.content.length}`);
-        const { path: relativePath, revision } = message.payload;
+        const { path: relativePath, revision, clientId } = message.payload;
         const state = this.getFileState(relativePath);
+
+        // Track if this client was the one who sent the save
+        const isOwnSave = clientId === this.sessionId;
+
         if (revision > state.revision) {
             state.revision = revision;
             state.exists = true;
             await this.applyRemoteFileEvent(relativePath, message.payload.content, 'CHANGE');
+            
+            if (isOwnSave) {
+                vscode.window.showInformationMessage("✓ Changes saved and shared with collaborators.");
+            } else {
+                vscode.window.showInformationMessage("Collaborative version updated.");
+            }
         }
     }
 
@@ -315,10 +351,16 @@ export class WorkspaceSyncService {
         }
     }
 
-    private async onRemoteFileEdit(message: FileEditMessage): Promise<void> {
-        // Obsolete: Handled by DocumentManager and Yjs now.
-        // We leave this to avoid breaking if an old message arrives, but we don't process it.
-        this.log(`[SYNC DEBUG] IGNORING LEGACY REMOTE EDIT\n[SYNC DEBUG] path=${message.payload.path}`);
+    private async onSaveRejected(message: SaveRejectedMessage): Promise<void> {
+        const { path: relativePath, currentRevision, currentContent } = message.payload;
+        this.log(`[INFO] Save rejected for ${relativePath}, server revision is ${currentRevision}. Pulling latest...`);
+        
+        vscode.window.showWarningMessage("Another collaborator saved first. Their version is now active.");
+        
+        const state = this.getFileState(relativePath);
+        state.revision = currentRevision;
+        state.exists = true;
+        await this.applyRemoteFileEvent(relativePath, currentContent, 'CHANGE');
     }
 
     private onLockGranted(message: Message): void {
@@ -535,6 +577,6 @@ export class WorkspaceSyncService {
         this.collaborationClient.removeListener('fileChanged', this.boundOnRemoteFileChanged);
         this.collaborationClient.removeListener('fileDeleted', this.boundOnRemoteFileDeleted);
         this.collaborationClient.removeListener('fileRenamed', this.boundOnRemoteFileRenamed);
-        this.collaborationClient.removeListener('fileEdit', this.boundOnRemoteFileEdit);
+        this.collaborationClient.removeListener('saveRejected', this.boundOnSaveRejected);
     }
 }

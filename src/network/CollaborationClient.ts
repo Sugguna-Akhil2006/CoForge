@@ -112,11 +112,8 @@ export class CollaborationClient extends EventEmitter {
             case MessageType.FILE_RENAMED:
                 this.emit('fileRenamed', message);
                 break;
-            case MessageType.DOCUMENT_UPDATE:
-                this.emit('documentUpdate', message);
-                break;
-            case MessageType.DOCUMENT_SYNC_RESPONSE:
-                this.emit('documentSyncResponse', message);
+            case MessageType.SAVE_REJECTED:
+                this.emit('saveRejected', message);
                 break;
             case MessageType.FILE_LOCK_GRANTED:
                 this.emit('fileLockGranted', message);
@@ -465,56 +462,19 @@ files=${files.length}`);
         }
     }
 
-    public sendJoinDocument(sessionId: string, path: string): void {
+    public sendSaveDocument(sessionId: string, path: string, baseRevision: number, content: string): void {
         const msg: Message = {
             messageId: crypto.randomUUID(),
             protocolVersion: 1,
             timestamp: Date.now(),
-            type: MessageType.JOIN_DOCUMENT,
-            payload: { sessionId, path }
+            type: MessageType.SAVE_DOCUMENT,
+            payload: { sessionId, path, baseRevision, content }
         };
-        this.client.send(msg);
-    }
-
-    public sendDocumentSyncRequest(sessionId: string, path: string, stateVector: Uint8Array): void {
-        const msg: Message = {
-            messageId: crypto.randomUUID(),
-            protocolVersion: 1,
-            timestamp: Date.now(),
-            type: MessageType.DOCUMENT_SYNC_REQUEST,
-            payload: { 
-                sessionId, 
-                path, 
-                stateVector: Buffer.from(stateVector).toString('base64') 
-            }
-        };
-        this.client.send(msg);
-    }
-
-    public sendDocumentUpdate(sessionId: string, path: string, update: Uint8Array): void {
-        const msg: Message = {
-            messageId: crypto.randomUUID(),
-            protocolVersion: 1,
-            timestamp: Date.now(),
-            type: MessageType.DOCUMENT_UPDATE,
-            payload: { 
-                sessionId, 
-                path, 
-                update: Buffer.from(update).toString('base64') 
-            }
-        };
-        this.client.send(msg);
-    }
-
-    public sendDocumentLeave(sessionId: string, path: string): void {
-        const msg: Message = {
-            messageId: crypto.randomUUID(),
-            protocolVersion: 1,
-            timestamp: Date.now(),
-            type: MessageType.DOCUMENT_LEAVE,
-            payload: { sessionId, path }
-        };
-        this.client.send(msg);
+        try {
+            this.client.send(msg);
+        } catch (error) {
+            this.log(`[ERROR] Failed to send SAVE_DOCUMENT: ${error}`);
+        }
     }
 
     public requestFileLock(sessionId: string, path: string): void {

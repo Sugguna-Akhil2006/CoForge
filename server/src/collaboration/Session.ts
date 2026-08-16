@@ -1,7 +1,4 @@
-import { WebSocket } from 'ws';
-import { CollaborativeDocument } from './documents/CollaborativeDocument';
-
-export interface FileLock {
+import { WebSocket } from 'ws';export interface FileLock {
     path: string;
     ownerClientId: string; // The WebSocket client ID (we'll just use an identifier or track by reference)
     ownerName: string;
@@ -26,7 +23,7 @@ export class Session {
     private hostClient?: WebSocket;
     private fileStates: Map<string, FileState>;
     private activeLocks: Map<string, FileLock>;
-    private documents: Map<string, CollaborativeDocument>;
+    private documents: Map<string, string>;
     public globalRevision: number = 0;
 
     constructor(sessionId: string, workspaceId: string) {
@@ -36,7 +33,7 @@ export class Session {
         this.clients = new Map<string, WebSocket>();
         this.fileStates = new Map<string, FileState>();
         this.activeLocks = new Map<string, FileLock>();
-        this.documents = new Map<string, CollaborativeDocument>();
+        this.documents = new Map<string, string>();
     }
 
     public getFileState(path: string): FileState | undefined {
@@ -76,19 +73,12 @@ export class Session {
         return state;
     }
 
-    // --- Collaborative Documents ---
-
-    public getDocument(path: string): CollaborativeDocument | undefined {
+    public getDocumentContent(path: string): string | undefined {
         return this.documents.get(path);
     }
 
-    public getOrCreateDocument(path: string, initialContent: string = ''): CollaborativeDocument {
-        let doc = this.documents.get(path);
-        if (!doc) {
-            doc = new CollaborativeDocument(path, initialContent);
-            this.documents.set(path, doc);
-        }
-        return doc;
+    public updateDocumentContent(path: string, content: string): void {
+        this.documents.set(path, content);
     }
 
     public removeDocument(path: string): void {

@@ -204,46 +204,23 @@ export interface FileLockHeartbeatMessage extends BaseMessage {
     };
 }
 
-export interface JoinDocumentMessage extends BaseMessage {
-    type: MessageType.JOIN_DOCUMENT;
+export interface SaveDocumentMessage extends BaseMessage {
+    type: MessageType.SAVE_DOCUMENT;
     payload: {
         sessionId: string;
         path: string;
+        baseRevision: number;
+        content: string;
     };
 }
 
-export interface DocumentSyncRequestMessage extends BaseMessage {
-    type: MessageType.DOCUMENT_SYNC_REQUEST;
+export interface SaveRejectedMessage extends BaseMessage {
+    type: MessageType.SAVE_REJECTED;
     payload: {
         sessionId: string;
         path: string;
-        stateVector: string; // Base64 encoded Uint8Array
-    };
-}
-
-export interface DocumentSyncResponseMessage extends BaseMessage {
-    type: MessageType.DOCUMENT_SYNC_RESPONSE;
-    payload: {
-        sessionId: string;
-        path: string;
-        update: string; // Base64 encoded Uint8Array
-    };
-}
-
-export interface DocumentUpdateMessage extends BaseMessage {
-    type: MessageType.DOCUMENT_UPDATE;
-    payload: {
-        sessionId: string;
-        path: string;
-        update: string; // Base64 encoded Uint8Array
-    };
-}
-
-export interface DocumentLeaveMessage extends BaseMessage {
-    type: MessageType.DOCUMENT_LEAVE;
-    payload: {
-        sessionId: string;
-        path: string;
+        currentRevision: number;
+        currentContent: string;
     };
 }
 
@@ -269,9 +246,6 @@ export type Message =
     | ReleaseFileLockMessage
     | FileUnlockedMessage
     | FileLockHeartbeatMessage
-    | JoinDocumentMessage
-    | DocumentSyncRequestMessage
-    | DocumentSyncResponseMessage
-    | DocumentUpdateMessage
-    | DocumentLeaveMessage
+    | SaveDocumentMessage
+    | SaveRejectedMessage
     | ErrorMessage;

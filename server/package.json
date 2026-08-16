@@ -14,8 +14,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "ws": "^8.21.3",
-    "yjs": "^13.6.32"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@swc/core": "^1.15.47",

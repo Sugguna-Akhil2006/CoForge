@@ -11,18 +11,16 @@ describe('Server Integration (CREATE_SESSION)', () => {
     let client: WebSocket;
     const PORT = 3001;
 
-    beforeAll((done) => {
+    beforeAll(async () => {
         server = new CollaborationServer();
-        server.start(PORT);
-        setTimeout(done, 500); // Wait for server to listen
+        await server.start(PORT);
     });
 
-    afterAll((done) => {
+    afterAll(async () => {
         if (client && client.readyState === WebSocket.OPEN) {
             client.close();
         }
-        server.stop();
-        setTimeout(done, 500);
+        await server.stop();
     });
 
     beforeEach((done) => {

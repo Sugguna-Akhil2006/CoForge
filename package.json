@@ -2,7 +2,7 @@
   "name": "coforge",
   "displayName": "CoForge",
   "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "publisher": "coforge",
   "icon": "icon.png",
   "repository": {
@@ -69,7 +69,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "ws": "^8.21.3",
-    "yjs": "^13.6.32"
+    "ws": "^8.21.3"
   }
 }

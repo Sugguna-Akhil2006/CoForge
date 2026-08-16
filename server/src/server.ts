@@ -3,7 +3,7 @@ import * as http from 'http';
 import { 
     Message, CreateSessionMessage, JoinSessionMessage, RequestWorkspaceSnapshotMessage, WorkspaceSnapshotMessage,
     RequestFileLockMessage, ReleaseFileLockMessage, FileLockHeartbeatMessage,
-    JoinDocumentMessage, DocumentSyncRequestMessage, DocumentSyncResponseMessage, DocumentUpdateMessage, DocumentLeaveMessage
+    SaveDocumentMessage, SaveRejectedMessage, FileChangedMessage
 } from './protocol/Message';
 import { MessageType } from './protocol/MessageType';
 import { MessageValidator } from './protocol/MessageValidator';
@@ -139,20 +139,8 @@ class CollaborationServer {
                     }
                     this.handleFileSyncEvent(ws, message);
                     break;
-                case MessageType.JOIN_DOCUMENT:
-                    this.handleJoinDocument(ws, message as JoinDocumentMessage);
-                    break;
-                case MessageType.DOCUMENT_SYNC_REQUEST:
-                    this.handleDocumentSyncRequest(ws, message as DocumentSyncRequestMessage);
-                    break;
-                case MessageType.DOCUMENT_SYNC_RESPONSE:
-                    this.handleDocumentSyncResponse(ws, message as DocumentSyncResponseMessage);
-                    break;
-                case MessageType.DOCUMENT_UPDATE:
-                    this.handleDocumentUpdate(ws, message as DocumentUpdateMessage);
-                    break;
-                case MessageType.DOCUMENT_LEAVE:
-                    this.handleDocumentLeave(ws, message as DocumentLeaveMessage);
+                case MessageType.SAVE_DOCUMENT:
+                    this.handleSaveDocument(ws, message as SaveDocumentMessage);
                     break;
                 default:
                     console.warn(`[WARN] Unhandled message type: ${message.type}`);
@@ -435,14 +423,7 @@ class CollaborationServer {
             const path = payload.path || payload.oldPath;
             if (!path) return;
 
-            // Enforce Locks for FILE_EDIT and FILE_CHANGED
-            if (message.type === MessageType.FILE_EDIT || message.type === MessageType.FILE_CHANGED) {
-                const lock = session.getLock(path);
-                if (lock && lock.ownerClientId !== clientId) {
-                    this.sendError(ws, message, 'FILE_LOCKED', `File is locked by ${lock.ownerName}`);
-                    return;
-                }
-            }
+            // Removed file lock enforcement to allow simultaneous open editing without read-only restrictions.
 
             // Enforce Revision and State
             const state = session.getFileState(path);
@@ -466,6 +447,12 @@ class CollaborationServer {
                 session.updateFileState(path, true, clientId); // FILE_EDIT / FILE_CHANGED
             }
 
+            if (message.type === MessageType.FILE_CREATED || message.type === MessageType.FILE_CHANGED) {
+                if (payload.content !== undefined) {
+                    session.updateDocumentContent(path, payload.content);
+                }
+            }
+
             // Sync new revision to payload
             if (message.type === MessageType.FILE_RENAMED) {
                 payload.revision = session.getFileState(payload.newPath)?.revision || 0;
@@ -484,91 +471,88 @@ class CollaborationServer {
         }
     }
 
-    private handleJoinDocument(ws: WebSocket, message: JoinDocumentMessage): void {
-        const { sessionId, path } = message.payload;
-        const session = this.sessionRegistry.getSession(sessionId);
-        if (!session || !session.hasClient(ws)) {
-            this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
-            return;
-        }
-
-        // Initialize document if it doesn't exist
-        session.getOrCreateDocument(path);
-        console.log(`[INFO] Client joined document ${path} in session ${sessionId}`);
-    }
-
-    private handleDocumentSyncRequest(ws: WebSocket, message: DocumentSyncRequestMessage): void {
-        const { sessionId, path, stateVector } = message.payload;
-        const session = this.sessionRegistry.getSession(sessionId);
-        if (!session || !session.hasClient(ws)) {
-            this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
-            return;
-        }
-
-        const doc = session.getDocument(path);
-        if (!doc) {
-            this.sendError(ws, message, 'NOT_FOUND', 'Document not found or not initialized.');
-            return;
-        }
-
+    private handleSaveDocument(ws: WebSocket, message: SaveDocumentMessage): void {
+        const { sessionId, path, baseRevision, content } = message.payload;
+        
         try {
-            const clientStateVector = Buffer.from(stateVector, 'base64');
-            const update = doc.encodeStateAsUpdate(clientStateVector);
-            const response: Message = {
-                messageId: crypto.randomUUID(),
-                correlationId: message.messageId,
-                protocolVersion: message.protocolVersion,
-                timestamp: Date.now(),
-                type: MessageType.DOCUMENT_SYNC_RESPONSE,
-                payload: {
-                    sessionId,
-                    path,
-                    update: Buffer.from(update).toString('base64')
+            const session = this.sessionRegistry.getSession(sessionId);
+            const senderIsMember = session ? session.hasClient(ws) : false;
+            
+            if (!session || !senderIsMember) {
+                this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
+                return;
+            }
+
+            const clientId = session.getClientId(ws);
+            if (!clientId) return;
+
+            const state = session.getFileState(path);
+            const currentRev = state ? state.revision : 0;
+
+            if (baseRevision === currentRev) {
+                // Accept save
+                const nextRev = session.incrementGlobalRevision();
+                session.updateFileState(path, true, clientId);
+                session.updateDocumentContent(path, content);
+                
+                // The updateFileState increments global revision and sets it to the state.
+                const finalState = session.getFileState(path);
+                if (finalState) {
+                    finalState.revision = nextRev; // Force nextRev if needed, but updateFileState does it already
                 }
-            };
-            this.sendMessage(ws, response);
-        } catch (err) {
-            console.error(`[ERROR] Failed to process DOCUMENT_SYNC_REQUEST:`, err);
-        }
-    }
 
-    private handleDocumentSyncResponse(ws: WebSocket, message: DocumentSyncResponseMessage): void {
-        const { sessionId, path, update } = message.payload;
-        const session = this.sessionRegistry.getSession(sessionId);
-        if (!session || !session.hasClient(ws)) return;
+                console.log(`[INFO] SAVE_DOCUMENT accepted for ${path} (New Revision: ${nextRev})`);
 
-        const doc = session.getDocument(path);
-        if (doc) {
-            try {
-                const updateBuffer = Buffer.from(update, 'base64');
-                doc.applyUpdate(updateBuffer);
-            } catch (err) {
-                console.error(`[ERROR] Failed to apply DOCUMENT_SYNC_RESPONSE update:`, err);
+                const fileChangedMsg: Message = {
+                    messageId: crypto.randomUUID(),
+                    protocolVersion: message.protocolVersion,
+                    timestamp: Date.now(),
+                    type: MessageType.FILE_CHANGED,
+                    payload: {
+                        sessionId,
+                        path,
+                        baseRevision,
+                        revision: nextRev,
+                        clientId,
+                        content
+                    }
+                };
+                // Broadcast to everyone (including sender if they need it, but sender can also receive it to confirm)
+                this.broadcastToSession(session, fileChangedMsg);
+
+            } else {
+                // Reject stale save
+                console.log(`[INFO] SAVE_DOCUMENT rejected for ${path}. baseRevision=${baseRevision}, currentRevision=${currentRev}`);
+                
+                // We don't have the current content stored in Session. Wait! We don't store file content in Session.ts, only metadata (FileState).
+                // But the requirement says: "send current document version".
+                // Since the server doesn't store file content, how do we send it?
+                // The prompt says: "send current document version." Wait, the server was passing around the content in `FILE_CHANGED` messages.
+                // In the current architecture, does the server store content?
+                // Let's check `WorkspaceSyncService.ts` and `CollaborationClient.ts`.
+                
+                const saveRejectedMsg: Message = {
+                    messageId: crypto.randomUUID(),
+                    protocolVersion: message.protocolVersion,
+                    timestamp: Date.now(),
+                    type: MessageType.SAVE_REJECTED,
+                    payload: {
+                        sessionId,
+                        path,
+                        currentRevision: currentRev,
+                        // If we don't have it, we just send empty or request host? 
+                        // Actually, if we just reject, the client can request it, or we can fetch from host.
+                        // For this basic requirement, we might need to store the content on the server or fetch from host.
+                        // Let's just send a rejection, and the client will have to pull it, or we store latest content on server.
+                        currentContent: session.getDocumentContent(path) || ''
+                    }
+                };
+                this.sendMessage(ws, saveRejectedMsg);
             }
+        } catch (error) {
+            console.error(`[ERROR] Failed to handle SAVE_DOCUMENT:`, error);
+            this.sendError(ws, message, 'SERVER_ERROR', 'Internal server error processing save.');
         }
-    }
-
-    private handleDocumentUpdate(ws: WebSocket, message: DocumentUpdateMessage): void {
-        const { sessionId, path, update } = message.payload;
-        const session = this.sessionRegistry.getSession(sessionId);
-        if (!session || !session.hasClient(ws)) return;
-
-        const doc = session.getDocument(path);
-        if (doc) {
-            try {
-                const updateBuffer = Buffer.from(update, 'base64');
-                doc.applyUpdate(updateBuffer);
-                // Broadcast to other clients
-                this.broadcastToSession(session, message, ws);
-            } catch (err) {
-                console.error(`[ERROR] Failed to apply DOCUMENT_UPDATE:`, err);
-            }
-        }
-    }
-
-    private handleDocumentLeave(ws: WebSocket, message: DocumentLeaveMessage): void {
-        // Optional: Could track per-document membership if desired
-        // For now we rely on the session-level tracking
     }
 
     private sendError(ws: WebSocket, requestMessage: Message, code: string, errorMessage: string): void {
@@ -618,21 +602,27 @@ class CollaborationServer {
         }
     }
 
-    public start(port: number = PORT): void {
-        this.server.listen(port, () => {
-            console.log(`[INFO] CoForge Collaboration Server is listening on port ${port}`);
+    public start(port: number = PORT): Promise<void> {
+        return new Promise((resolve) => {
+            this.server.listen(port, () => {
+                console.log(`[INFO] CoForge Collaboration Server is listening on port ${port}`);
+                resolve();
+            });
         });
     }
 
-    public stop(): void {
-        console.log('[INFO] Shutting down Collaboration Server...');
-        for (const client of this.wss.clients) {
-            this.sessionRegistry.removeClientFromAnySession(client);
-            client.close();
-        }
-        this.wss.close(() => {
-            this.server.close(() => {
-                console.log('[INFO] Server stopped.');
+    public stop(): Promise<void> {
+        return new Promise((resolve) => {
+            console.log('[INFO] Shutting down Collaboration Server...');
+            for (const client of this.wss.clients) {
+                this.sessionRegistry.removeClientFromAnySession(client);
+                client.close();
+            }
+            this.wss.close(() => {
+                this.server.close(() => {
+                    console.log('[INFO] Server stopped.');
+                    resolve();
+                });
             });
         });
     }

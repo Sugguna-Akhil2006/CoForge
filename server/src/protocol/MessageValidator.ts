@@ -176,22 +176,18 @@ export class MessageValidator {
                        typeof payload.ownerClientId === 'string' && payload.ownerClientId.trim() !== '' &&
                        typeof payload.ownerName === 'string' &&
                        typeof payload.reason === 'string';
-            case MessageType.JOIN_DOCUMENT:
-            case MessageType.DOCUMENT_LEAVE:
-                return this.isObject(payload) &&
-                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
-                       typeof payload.path === 'string' && payload.path.trim() !== '';
-            case MessageType.DOCUMENT_SYNC_REQUEST:
+            case MessageType.SAVE_DOCUMENT:
                 return this.isObject(payload) &&
                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
                        typeof payload.path === 'string' && payload.path.trim() !== '' &&
-                       typeof payload.stateVector === 'string';
-            case MessageType.DOCUMENT_SYNC_RESPONSE:
-            case MessageType.DOCUMENT_UPDATE:
+                       typeof payload.baseRevision === 'number' &&
+                       typeof payload.content === 'string';
+            case MessageType.SAVE_REJECTED:
                 return this.isObject(payload) &&
                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
                        typeof payload.path === 'string' && payload.path.trim() !== '' &&
-                       typeof payload.update === 'string';
+                       typeof payload.currentRevision === 'number' &&
+                       typeof payload.currentContent === 'string';
             case MessageType.ERROR:
                 return this.isObject(payload) && 
                        typeof payload.code === 'string' && payload.code.trim() !== '' &&
