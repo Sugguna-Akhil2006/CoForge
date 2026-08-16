@@ -112,6 +112,12 @@ export class CollaborationClient extends EventEmitter {
             case MessageType.FILE_RENAMED:
                 this.emit('fileRenamed', message);
                 break;
+            case MessageType.DOCUMENT_UPDATE:
+                this.emit('documentUpdate', message);
+                break;
+            case MessageType.DOCUMENT_SYNC_RESPONSE:
+                this.emit('documentSyncResponse', message);
+                break;
             case MessageType.FILE_LOCK_GRANTED:
                 this.emit('fileLockGranted', message);
                 break;
@@ -457,6 +463,58 @@ files=${files.length}`);
         } catch (error) {
             this.log(`[ERROR] Failed to send FILE_EDIT: ${error}`);
         }
+    }
+
+    public sendJoinDocument(sessionId: string, path: string): void {
+        const msg: Message = {
+            messageId: crypto.randomUUID(),
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.JOIN_DOCUMENT,
+            payload: { sessionId, path }
+        };
+        this.client.send(msg);
+    }
+
+    public sendDocumentSyncRequest(sessionId: string, path: string, stateVector: Uint8Array): void {
+        const msg: Message = {
+            messageId: crypto.randomUUID(),
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.DOCUMENT_SYNC_REQUEST,
+            payload: { 
+                sessionId, 
+                path, 
+                stateVector: Buffer.from(stateVector).toString('base64') 
+            }
+        };
+        this.client.send(msg);
+    }
+
+    public sendDocumentUpdate(sessionId: string, path: string, update: Uint8Array): void {
+        const msg: Message = {
+            messageId: crypto.randomUUID(),
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.DOCUMENT_UPDATE,
+            payload: { 
+                sessionId, 
+                path, 
+                update: Buffer.from(update).toString('base64') 
+            }
+        };
+        this.client.send(msg);
+    }
+
+    public sendDocumentLeave(sessionId: string, path: string): void {
+        const msg: Message = {
+            messageId: crypto.randomUUID(),
+            protocolVersion: 1,
+            timestamp: Date.now(),
+            type: MessageType.DOCUMENT_LEAVE,
+            payload: { sessionId, path }
+        };
+        this.client.send(msg);
     }
 
     public requestFileLock(sessionId: string, path: string): void {

@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { CollaborativeDocument } from './documents/CollaborativeDocument';
 
 export interface FileLock {
     path: string;
@@ -25,6 +26,7 @@ export class Session {
     private hostClient?: WebSocket;
     private fileStates: Map<string, FileState>;
     private activeLocks: Map<string, FileLock>;
+    private documents: Map<string, CollaborativeDocument>;
     public globalRevision: number = 0;
 
     constructor(sessionId: string, workspaceId: string) {
@@ -34,6 +36,7 @@ export class Session {
         this.clients = new Map<string, WebSocket>();
         this.fileStates = new Map<string, FileState>();
         this.activeLocks = new Map<string, FileLock>();
+        this.documents = new Map<string, CollaborativeDocument>();
     }
 
     public getFileState(path: string): FileState | undefined {
@@ -66,10 +69,30 @@ export class Session {
         state.lastModifiedBy = clientId;
         if (!exists) {
             state.deletedAt = Date.now();
+            this.documents.delete(path); // Clean up doc on delete
         } else {
             state.deletedAt = undefined;
         }
         return state;
+    }
+
+    // --- Collaborative Documents ---
+
+    public getDocument(path: string): CollaborativeDocument | undefined {
+        return this.documents.get(path);
+    }
+
+    public getOrCreateDocument(path: string, initialContent: string = ''): CollaborativeDocument {
+        let doc = this.documents.get(path);
+        if (!doc) {
+            doc = new CollaborativeDocument(path, initialContent);
+            this.documents.set(path, doc);
+        }
+        return doc;
+    }
+
+    public removeDocument(path: string): void {
+        this.documents.delete(path);
     }
 
     // --- Locking ---

@@ -81,8 +81,8 @@ describe('WebSocketClient', () => {
         jest.useFakeTimers();
         const connectPromise = client.connect('wss://coforge.onrender.com');
         
-        // Advance timers by 10s to trigger timeout
-        jest.advanceTimersByTime(10000);
+        // Advance timers by 60s to trigger timeout
+        jest.advanceTimersByTime(60000);
         
         await expect(connectPromise).rejects.toThrow('WebSocket connection timeout: wss://coforge.onrender.com');
         jest.useRealTimers();

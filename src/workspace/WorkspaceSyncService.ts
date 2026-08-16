@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ILogger } from '../network/WebSocketClient';
 import { CollaborationClient } from '../network/CollaborationClient';
 import { FileCreatedMessage, FileChangedMessage, FileDeletedMessage, FileRenamedMessage, FileEditMessage, Message } from '../protocol/Message';
+import { DocumentManager } from '../collaboration/document/DocumentManager';
 
 interface LocalFileState {
     revision: number;
@@ -39,6 +40,8 @@ export class WorkspaceSyncService {
 
     private lockHeartbeatTimer: NodeJS.Timeout | null = null;
     private statusBarItem: vscode.StatusBarItem;
+    
+    private documentManager: DocumentManager;
 
     constructor(
         private readonly sessionId: string,
@@ -58,6 +61,9 @@ export class WorkspaceSyncService {
         const alignment = vscode.StatusBarAlignment ? vscode.StatusBarAlignment.Right : 2;
         this.statusBarItem = vscode.window.createStatusBarItem(alignment, 100);
         this.disposables.push(this.statusBarItem);
+        
+        this.documentManager = new DocumentManager(this.sessionId, this.collaborationClient);
+        this.disposables.push(this.documentManager);
     }
 
     private log(message: string): void {
@@ -93,59 +99,7 @@ export class WorkspaceSyncService {
             await this.handleLocalFileEvent(uri, rootPath, 'DELETE');
         }));
 
-        this.disposables.push(vscode.workspace.onDidChangeTextDocument(async (event) => {
-            if (event.document.uri.scheme !== 'file') {
-                return;
-            }
-            const relativePath = vscode.workspace.asRelativePath(event.document.uri, false).replace(/\\/g, '/');
-
-            // Ignore excluded folders
-            if (relativePath.includes('.git/') || relativePath.includes('node_modules/') || relativePath.includes('.vscode/')) {
-                return;
-            }
-
-            if (this.applyingRemoteChanges.has(relativePath)) {
-                this.log(`[SYNC DEBUG] SUPPRESSED REMOTE EVENT\n[SYNC DEBUG] path=${relativePath}`);
-                return;
-            }
-
-            // Convert contentChanges to protocol format
-            const changes = event.contentChanges.map(c => ({
-                range: {
-                    start: { line: c.range.start.line, character: c.range.start.character },
-                    end: { line: c.range.end.line, character: c.range.end.character }
-                },
-                text: c.text
-            }));
-
-            if (changes.length === 0) return;
-
-            // Accumulate edits
-            let currentEdits = this.pendingEdits.get(relativePath) || [];
-            currentEdits.push(...changes);
-            this.pendingEdits.set(relativePath, currentEdits);
-
-            // Clear existing timer
-            if (this.editTimers.has(relativePath)) {
-                clearTimeout(this.editTimers.get(relativePath)!);
-            }
-
-            // Set debounce timer
-            const timer = setTimeout(() => {
-                this.editTimers.delete(relativePath);
-                const batchedEdits = this.pendingEdits.get(relativePath);
-                this.pendingEdits.delete(relativePath);
-                
-                if (batchedEdits && batchedEdits.length > 0) {
-                    const state = this.getFileState(relativePath);
-                    const rev = state.revision;
-                    this.collaborationClient.sendFileEdit(this.sessionId, relativePath, rev, rev + 1, batchedEdits);
-                    this.log(`[SYNC DEBUG] LOCAL EDIT\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${rev}\n[SYNC DEBUG] changes=${batchedEdits.length}`);
-                }
-            }, this.EDIT_DEBOUNCE_MS);
-
-            this.editTimers.set(relativePath, timer);
-        }));
+        // Removed manual onDidChangeTextDocument for FILE_EDIT - DocumentManager handles it now.
 
         this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
             for (const file of event.files) {
@@ -164,27 +118,22 @@ export class WorkspaceSyncService {
         this.collaborationClient.on('fileLockDenied', this.boundOnLockDenied);
         this.collaborationClient.on('fileUnlocked', this.boundOnUnlocked);
 
-        // Active editor changes -> request lock
-        this.disposables.push(vscode.window.onDidChangeActiveTextEditor(editor => {
-            this.handleActiveEditorChange(editor);
-        }));
+        // Active editor changes -> request lock - Disable rigid locking for now to allow collaborative edit
+        // this.disposables.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+        //     this.handleActiveEditorChange(editor);
+        // }));
 
         // Document closed -> release lock
-        this.disposables.push(vscode.workspace.onDidCloseTextDocument(doc => {
-            if (doc.uri.scheme === 'file') {
-                const relativePath = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, '/');
-                this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
-            }
-        }));
+        // this.disposables.push(vscode.workspace.onDidCloseTextDocument(doc => {
+        //     if (doc.uri.scheme === 'file') {
+        //         const relativePath = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, '/');
+        //         this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
+        //     }
+        // }));
 
         this.startLockHeartbeat();
 
         this.log('[INFO] WorkspaceSyncService started.');
-        
-        // Initial lock request if there's an active editor
-        if (vscode.window.activeTextEditor) {
-            this.handleActiveEditorChange(vscode.window.activeTextEditor);
-        }
     }
 
     public initializeRevisions(snapshotRevision: number, paths: string[]): void {
@@ -367,45 +316,9 @@ export class WorkspaceSyncService {
     }
 
     private async onRemoteFileEdit(message: FileEditMessage): Promise<void> {
-        const { path: relativePath, revision, changes } = message.payload;
-        this.log(`[SYNC DEBUG] REMOTE EDIT\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${revision}\n[SYNC DEBUG] changes=${changes.length}`);
-
-        const state = this.getFileState(relativePath);
-        if (revision > state.revision) {
-            state.revision = revision;
-        }
-
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) return;
-
-        const rootUri = workspaceFolders[0].uri;
-        const fileUri = vscode.Uri.joinPath(rootUri, ...relativePath.split('/'));
-
-        this.applyingRemoteChanges.add(relativePath);
-        this.log(`[SYNC DEBUG] APPLYING REMOTE EDIT\n[SYNC DEBUG] path=${relativePath}`);
-
-        try {
-            const edit = new vscode.WorkspaceEdit();
-            
-            for (const change of changes) {
-                const range = new vscode.Range(
-                    change.range.start.line, change.range.start.character,
-                    change.range.end.line, change.range.end.character
-                );
-                edit.replace(fileUri, range, change.text);
-            }
-
-            await vscode.workspace.applyEdit(edit);
-
-            this.log(`[SYNC DEBUG] REMOTE EDIT APPLIED\n[SYNC DEBUG] path=${relativePath}\n[SYNC DEBUG] revision=${revision}`);
-        } catch (error) {
-            this.log(`[ERROR] Failed to apply remote edit for ${relativePath}: ${error}`);
-        } finally {
-            // Delay removing the guard so that onDidChangeTextDocument event gets suppressed correctly
-            setTimeout(() => {
-                this.applyingRemoteChanges.delete(relativePath);
-            }, 50);
-        }
+        // Obsolete: Handled by DocumentManager and Yjs now.
+        // We leave this to avoid breaking if an old message arrives, but we don't process it.
+        this.log(`[SYNC DEBUG] IGNORING LEGACY REMOTE EDIT\n[SYNC DEBUG] path=${message.payload.path}`);
     }
 
     private onLockGranted(message: Message): void {

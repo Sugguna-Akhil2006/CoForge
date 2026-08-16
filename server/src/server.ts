@@ -2,7 +2,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
 import { 
     Message, CreateSessionMessage, JoinSessionMessage, RequestWorkspaceSnapshotMessage, WorkspaceSnapshotMessage,
-    RequestFileLockMessage, ReleaseFileLockMessage, FileLockHeartbeatMessage
+    RequestFileLockMessage, ReleaseFileLockMessage, FileLockHeartbeatMessage,
+    JoinDocumentMessage, DocumentSyncRequestMessage, DocumentSyncResponseMessage, DocumentUpdateMessage, DocumentLeaveMessage
 } from './protocol/Message';
 import { MessageType } from './protocol/MessageType';
 import { MessageValidator } from './protocol/MessageValidator';
@@ -137,6 +138,21 @@ class CollaborationServer {
                         console.log(`[TRACE 4] SERVER RECEIVED\ntype=${message.type}\nmessageId=${message.messageId}`);
                     }
                     this.handleFileSyncEvent(ws, message);
+                    break;
+                case MessageType.JOIN_DOCUMENT:
+                    this.handleJoinDocument(ws, message as JoinDocumentMessage);
+                    break;
+                case MessageType.DOCUMENT_SYNC_REQUEST:
+                    this.handleDocumentSyncRequest(ws, message as DocumentSyncRequestMessage);
+                    break;
+                case MessageType.DOCUMENT_SYNC_RESPONSE:
+                    this.handleDocumentSyncResponse(ws, message as DocumentSyncResponseMessage);
+                    break;
+                case MessageType.DOCUMENT_UPDATE:
+                    this.handleDocumentUpdate(ws, message as DocumentUpdateMessage);
+                    break;
+                case MessageType.DOCUMENT_LEAVE:
+                    this.handleDocumentLeave(ws, message as DocumentLeaveMessage);
                     break;
                 default:
                     console.warn(`[WARN] Unhandled message type: ${message.type}`);
@@ -466,6 +482,93 @@ class CollaborationServer {
             console.error(`[ERROR] Failed to handle ${message.type}:`, error);
             this.sendError(ws, message, 'SERVER_ERROR', 'Internal server error processing file sync event.');
         }
+    }
+
+    private handleJoinDocument(ws: WebSocket, message: JoinDocumentMessage): void {
+        const { sessionId, path } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session || !session.hasClient(ws)) {
+            this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
+            return;
+        }
+
+        // Initialize document if it doesn't exist
+        session.getOrCreateDocument(path);
+        console.log(`[INFO] Client joined document ${path} in session ${sessionId}`);
+    }
+
+    private handleDocumentSyncRequest(ws: WebSocket, message: DocumentSyncRequestMessage): void {
+        const { sessionId, path, stateVector } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session || !session.hasClient(ws)) {
+            this.sendError(ws, message, 'UNAUTHORIZED', 'Client is not part of this session.');
+            return;
+        }
+
+        const doc = session.getDocument(path);
+        if (!doc) {
+            this.sendError(ws, message, 'NOT_FOUND', 'Document not found or not initialized.');
+            return;
+        }
+
+        try {
+            const clientStateVector = Buffer.from(stateVector, 'base64');
+            const update = doc.encodeStateAsUpdate(clientStateVector);
+            const response: Message = {
+                messageId: crypto.randomUUID(),
+                correlationId: message.messageId,
+                protocolVersion: message.protocolVersion,
+                timestamp: Date.now(),
+                type: MessageType.DOCUMENT_SYNC_RESPONSE,
+                payload: {
+                    sessionId,
+                    path,
+                    update: Buffer.from(update).toString('base64')
+                }
+            };
+            this.sendMessage(ws, response);
+        } catch (err) {
+            console.error(`[ERROR] Failed to process DOCUMENT_SYNC_REQUEST:`, err);
+        }
+    }
+
+    private handleDocumentSyncResponse(ws: WebSocket, message: DocumentSyncResponseMessage): void {
+        const { sessionId, path, update } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session || !session.hasClient(ws)) return;
+
+        const doc = session.getDocument(path);
+        if (doc) {
+            try {
+                const updateBuffer = Buffer.from(update, 'base64');
+                doc.applyUpdate(updateBuffer);
+            } catch (err) {
+                console.error(`[ERROR] Failed to apply DOCUMENT_SYNC_RESPONSE update:`, err);
+            }
+        }
+    }
+
+    private handleDocumentUpdate(ws: WebSocket, message: DocumentUpdateMessage): void {
+        const { sessionId, path, update } = message.payload;
+        const session = this.sessionRegistry.getSession(sessionId);
+        if (!session || !session.hasClient(ws)) return;
+
+        const doc = session.getDocument(path);
+        if (doc) {
+            try {
+                const updateBuffer = Buffer.from(update, 'base64');
+                doc.applyUpdate(updateBuffer);
+                // Broadcast to other clients
+                this.broadcastToSession(session, message, ws);
+            } catch (err) {
+                console.error(`[ERROR] Failed to apply DOCUMENT_UPDATE:`, err);
+            }
+        }
+    }
+
+    private handleDocumentLeave(ws: WebSocket, message: DocumentLeaveMessage): void {
+        // Optional: Could track per-document membership if desired
+        // For now we rely on the session-level tracking
     }
 
     private sendError(ws: WebSocket, requestMessage: Message, code: string, errorMessage: string): void {

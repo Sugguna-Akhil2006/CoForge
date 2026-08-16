@@ -2,7 +2,7 @@
   "name": "coforge",
   "displayName": "CoForge",
   "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "coforge",
   "icon": "icon.png",
   "repository": {
@@ -54,7 +54,7 @@
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "npm run esbuild",
     "watch": "npm run esbuild-watch",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --runInBand --detectOpenHandles"
   },
   "devDependencies": {
     "@swc/core": "^1.15.47",
@@ -69,6 +69,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "yjs": "^13.6.32"
   }
 }

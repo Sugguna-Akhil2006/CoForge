@@ -204,6 +204,49 @@ export interface FileLockHeartbeatMessage extends BaseMessage {
     };
 }
 
+export interface JoinDocumentMessage extends BaseMessage {
+    type: MessageType.JOIN_DOCUMENT;
+    payload: {
+        sessionId: string;
+        path: string;
+    };
+}
+
+export interface DocumentSyncRequestMessage extends BaseMessage {
+    type: MessageType.DOCUMENT_SYNC_REQUEST;
+    payload: {
+        sessionId: string;
+        path: string;
+        stateVector: string; // Base64 encoded Uint8Array
+    };
+}
+
+export interface DocumentSyncResponseMessage extends BaseMessage {
+    type: MessageType.DOCUMENT_SYNC_RESPONSE;
+    payload: {
+        sessionId: string;
+        path: string;
+        update: string; // Base64 encoded Uint8Array
+    };
+}
+
+export interface DocumentUpdateMessage extends BaseMessage {
+    type: MessageType.DOCUMENT_UPDATE;
+    payload: {
+        sessionId: string;
+        path: string;
+        update: string; // Base64 encoded Uint8Array
+    };
+}
+
+export interface DocumentLeaveMessage extends BaseMessage {
+    type: MessageType.DOCUMENT_LEAVE;
+    payload: {
+        sessionId: string;
+        path: string;
+    };
+}
+
 export type Message = 
     | PingMessage 
     | PongMessage 
@@ -226,4 +269,9 @@ export type Message =
     | ReleaseFileLockMessage
     | FileUnlockedMessage
     | FileLockHeartbeatMessage
+    | JoinDocumentMessage
+    | DocumentSyncRequestMessage
+    | DocumentSyncResponseMessage
+    | DocumentUpdateMessage
+    | DocumentLeaveMessage
     | ErrorMessage;

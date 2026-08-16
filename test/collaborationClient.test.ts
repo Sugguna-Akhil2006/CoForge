@@ -37,10 +37,10 @@ describe('CollaborationClient', () => {
         client.dispose();
     });
 
-    it('should connect to ws://localhost:3000 by default', async () => {
+    it('should connect to wss://coforge.onrender.com by default', async () => {
         mockWs.connect.mockResolvedValue(undefined);
         await client.connect();
-        expect(mockWs.connect).toHaveBeenCalledWith('ws://localhost:3000');
+        expect(mockWs.connect).toHaveBeenCalledWith('wss://coforge.onrender.com');
     });
 
     it('should disconnect using underlying client', () => {
@@ -188,13 +188,14 @@ describe('CollaborationClient', () => {
             timestamp: Date.now(),
             type: MessageType.SESSION_JOINED,
             payload: {
-                sessionId: 'session-123'
+                sessionId: 'session-123',
+                clientId: 'client-123'
             }
         };
         
         mockWs.emit('message', joinedMessage);
         
-        await expect(joinPromise).resolves.toBeDefined();
+        await expect(joinPromise).resolves.toBeUndefined();
     });
 
     it('should reject joinSession on ERROR response', async () => {
