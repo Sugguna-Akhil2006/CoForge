@@ -1,383 +1,215 @@
 # CoForge
 
-> Collaborative coding and workspace synchronization directly inside Visual Studio Code.
-
-CoForge lets developers create and join shared VS Code collaboration sessions, synchronize workspace changes, and coordinate saved document versions with other collaborators.
+CoForge is a Visual Studio Code collaboration extension that allows developers to collaborate on the same workspace using session-based collaboration, workspace synchronization, per-file editing locks, and controlled save-based synchronization.
 
 Marketplace: [https://marketplace.visualstudio.com/items?itemName=coforge.coforge](https://marketplace.visualstudio.com/items?itemName=coforge.coforge)  
 GitHub: [https://github.com/Sugguna-Akhil2006/CoForge](https://github.com/Sugguna-Akhil2006/CoForge)  
-Next Release: v1.0.8  
 Production WebSocket server: wss://coforge.onrender.com
 
 ## Features
 
-### Collaboration Sessions
-Create and join collaboration sessions using a unique session ID.
+- Session-based collaboration
+- Start Collaboration
+- Join Collaboration
+- Stop Collaboration
+- Session ID sharing
+- Copy Session ID
+- Copy Invite
+- Workspace/file synchronization
+- Save-based synchronization
+- Conflict/revision protection
+- Per-file editing locks
+- Independent editing of unlocked files
+- View locked files
+- Run/debug while another user has a file locked
+- Automatic lock release when the user moves away from the actively locked file
+- Lock cleanup on disconnect
+- Stale-lock/heartbeat cleanup
+- Multiple collaborators
+- VS Code command-palette integration
 
-### Workspace Synchronization
-Collaborators can synchronize the shared workspace state.
+> **Note**: CoForge intentionally uses save-based synchronization rather than continuously synchronizing every keystroke.
 
-### Save-Based Document Synchronization
-Document editing remains local while users type.
-A successful save becomes a collaboration event.
+## Start a Collaboration
 
-### First-Save-Wins
-The server uses document revisions.
-If multiple users are editing the same revision:
-the first valid save is accepted.
-Subsequent stale saves are rejected.
+1. Open the project in VS Code.
+2. Press: `Ctrl + Shift + P`
+3. Select: `CoForge: Start Collaboration`
+4. Follow the prompts.
+5. A Collaboration Session ID will be generated.
+6. Use **Copy Session ID** or **Copy Invite** to share the session with teammates.
 
-### File Management
-Support:
-- file creation
-- file deletion
-- file rename
-
-### WebSocket Communication
-CoForge uses WebSockets for collaboration/session communication.
-
-### Reconnection
-Clients can reconnect and synchronize with the latest accepted workspace/document state.
-
-### VS Code Integration
-CoForge works directly through the VS Code Command Palette.
-
-## How synchronization works
-
-CoForge intentionally does not synchronize every keystroke between users.
-
-Each collaborator can edit their local copy independently.
-
-When a user saves, CoForge sends the saved document version to the collaboration server.
-
-The server checks the document revision.
-
-If the save is based on the current revision, it is accepted and becomes the new collaborative version.
-
-If another collaborator has already saved a newer revision, the stale save is rejected.
-
+Example:
 ```text
-User A edits ─────── LOCAL
-User B edits ─────── LOCAL
-
-        User A presses Save
-                 │
-                 ▼
-          CoForge Server
-                 │
-          Revision Check
-                 │
-          ┌──────┴──────┐
-          ▼             ▼
-       ACCEPT         REJECT
-          │             │
-          ▼             ▼
-   New revision     Stale revision
-          │
-          ▼
-   Collaborators
-   receive version
+Session ID:
+dcc4ca4e-26ba-4269-833e-318f9c2f4633
 ```
 
-# How to Use CoForge
+## Join a Collaboration
 
-START → SHARE SESSION ID → JOIN → COLLABORATE → SAVE → STOP
+1. Open the project in VS Code.
+2. Press: `Ctrl + Shift + P`
+3. Select: `CoForge: Join Collaboration`
+4. Enter the Session ID provided by the host.
+5. Complete the join flow.
+6. The workspace will synchronize with the active collaboration session.
 
-## Start a Collaboration Session
-
-### 1. Open your project
-Open the workspace/project you want to collaborate on in VS Code.
-
-### 2. Open Command Palette
-Press:
-`Ctrl + Shift + P`
-
-### 3. Start CoForge
-Search for:
-`CoForge: Start Collaboration`
-
-Select it.
-
-CoForge creates a collaboration session.
-
-You will receive a unique session ID.
-
-Example:
-`dcc4ca4e-26ba-4269-833e-318f9c2f4633`
-
-IMPORTANT:
-This is only an example.
-Your actual session ID will be different.
-
-### 4. Share the Session ID
-Copy the session ID and send it to your teammate.
-
-Example:
-
-Host:
-`CoForge: Start Collaboration`
-↓
-Session ID:
-`YOUR-SESSION-ID`
-↓
-Send the ID to your teammate.
-
-## Join a Collaboration Session
-
-### 1. Open the project/workspace
-Open VS Code on the collaborator's computer.
-
-### 2. Open Command Palette
-Press:
-`Ctrl + Shift + P`
-
-### 3. Join CoForge
-Search:
-`CoForge: Join Collaboration`
-
-Select it.
-
-### 4. Enter the Session ID
-Enter the session ID provided by the host.
-
-Example:
-`YOUR-SESSION-ID`
-
-### 5. Connect
-Once connected, CoForge synchronizes the collaboration/workspace state.
-
-The collaborator can now work in the shared session.
-
-## Collaborative Editing
-
-Typing is local.
-
-CoForge does not broadcast every keystroke.
-
-This allows each developer to work normally without cursor jumping or live-edit conflicts.
-
-When you are ready to publish your changes to the collaboration session, save the file.
-
-Example:
-
-User A edits:
-`main.ts`
-
-User B edits:
-`main.ts`
-
-Both can work independently.
-
-When A saves first:
-A's saved version becomes the accepted version.
-B receives the accepted version.
-
-If B tries to save an older revision afterward:
-CoForge rejects the stale save.
-
-## First-Save-Wins
-
-Initial revision:
-10
-
-User A edits locally.
-User B edits locally.
-Both are based on revision 10.
-
-A saves:
-SAVE revision 10
-
-Server:
-10 == current revision
-ACCEPT
-
-Current revision becomes:
-11
-
-B then tries:
-SAVE revision 10
-
-Server:
-10 != current revision 11
-REJECT
-
-B receives the current revision 11.
-
-This prevents stale edits from overwriting an already accepted collaborative version.
+*Note: You can join with a display name. However, the human-readable name display in the lock UI is currently not fully reliable. In some cases, an internal user ID might be displayed instead.*
 
 ## Stop Collaboration
 
-### 1. Open Command Palette
-Press:
-`Ctrl + Shift + P`
+1. Press: `Ctrl + Shift + P`
+2. Select: `CoForge: Stop Collaboration`
 
-### 2. Search:
-`CoForge: Stop Collaboration`
+This disconnects the user from the active collaboration session and releases locks owned by that user.
 
-### 3. Select the command
-Stops the local client's active collaboration connection.
+## File Locking
 
-## Command Reference
+CoForge features robust, per-file locking:
 
-| Command | Description |
+Example:
+
+Akhil is editing `main.ts`.
+
+That file is locked for other collaborators.
+However, other files remain editable:
+
+```text
+main.ts      🔒 Locked
+utils.ts     🟢 Editable
+server.ts    🟢 Editable
+README.md    🟢 Editable
+```
+
+Other collaborators can:
+- View the locked file
+- Run/debug the project
+- Edit other unlocked files
+- Edit the locked file after its lock is released
+
+Locking is strictly PER FILE, not workspace-wide.
+
+## Lock Release
+
+When a collaborator moves away from the file they are actively editing, the file lock is released automatically so another collaborator can work on it.
+
+Locks are also cleaned up when:
+- collaboration is stopped
+- the user disconnects
+- a stale lock expires
+
+## Synchronization
+
+CoForge intentionally does NOT use continuous live keystroke synchronization.
+
+Instead:
+1. Collaborator edits a file locally.
+2. Collaborator saves the file.
+3. CoForge synchronizes the saved version.
+4. Other participants receive the updated file.
+
+This design reduces conflicts and avoids the unstable behavior that can occur when multiple people continuously modify the same file.
+
+## Copy Session ID
+
+After starting a collaboration session, use **Copy Session ID** to copy only the session ID to the clipboard.
+
+## Copy Invite
+
+**Copy Invite** creates a ready-to-share collaboration message containing the session information and instructions for joining.
+
+## Commands
+
+| Command | Purpose |
 |---|---|
-| CoForge: Start Collaboration | Create a new collaboration session |
-| CoForge: Join Collaboration | Join an existing session using a session ID |
-| CoForge: Stop Collaboration | Stop the local collaboration connection |
-| CoForge: Request Workspace Snapshot | Request the current workspace snapshot |
+| `CoForge: Start Collaboration` | Create a new collaboration session |
+| `CoForge: Join Collaboration` | Join an existing session |
+| `CoForge: Stop Collaboration` | Leave the current collaboration session |
+| `CoForge: Request Workspace Snapshot` | Request the current workspace state |
 
-## Quick Start
+## Workflow
 
-Host:
-1. Open VS Code.
-2. Open Command Palette.
-3. Run `CoForge: Start Collaboration`.
-4. Copy the session ID.
-5. Share it with your teammate.
+**Host:**
+Start Collaboration
+↓
+Receive Session ID
+↓
+Copy Session ID / Copy Invite
+↓
+Share with teammates
 
-Collaborator:
-1. Open VS Code.
-2. Open Command Palette.
-3. Run `CoForge: Join Collaboration`.
-4. Enter the session ID.
-5. Start collaborating.
+**Teammate:**
+Join Collaboration
+↓
+Enter Session ID
+↓
+Synchronize workspace
+↓
+Edit unlocked files
+↓
+Save changes
+↓
+Changes synchronize with collaborators
 
-Finish:
-1. Open Command Palette.
-2. Run `CoForge: Stop Collaboration`.
+## Installation
 
-## Architecture
+Install from the VS Code Marketplace:
+[CoForge Extension](https://marketplace.visualstudio.com/items?itemName=coforge.coforge)
 
-```text
-VS Code
-   │
-   ▼
-CoForge Extension
-   │
-   ▼
-WebSocket
-   │
-   ▼
-CoForge Collaboration Server
-   │
-   ├── Sessions
-   ├── Workspace State
-   ├── Document Revisions
-   └── Save Conflict Handling
-   │
-   ▼
-Collaborating VS Code Clients
+You can also install a local VSIX package:
+```bash
+code --install-extension .\coforge-1.0.9.vsix --force
 ```
-
-Document save flow:
-```text
-VS Code Save
-     │
-     ▼
-SAVE_DOCUMENT
-     │
-     ▼
-Server Revision Check
-     │
- ┌───┴────┐
- ▼        ▼
-ACCEPT   STALE
- │        │
- ▼        ▼
-New      Reject
-Revision + Current Version
- │
- ▼
-Collaborators
-```
-
-## Tech Stack
-
-- TypeScript
-- VS Code Extension API
-- Node.js
-- WebSocket (`ws`)
-- Jest
-
-## Testing
-
-8 test suites passed — 78 tests passed.
 
 ## Development
 
-Install:
+Install dependencies:
 ```bash
 npm install
 ```
 
-Compile:
+Compile the extension:
 ```bash
 npm run compile
 ```
 
-Test:
+Run tests:
 ```bash
 npm test
 ```
 
-Package:
-```bash
-vsce package
+## Testing
+
+CoForge includes a comprehensive Jest test suite covering:
+- unit tests
+- protocol tests
+- WebSocket tests
+- file locking tests
+- display-name tests
+- server integration tests
+
+Currently, 10 test suites and 86 tests pass successfully (86/86).
+
+## Architecture
+
+```text
+VS Code Extension
+        ↓
+WebSocket Client
+        ↓
+CoForge Collaboration Server
+        ↓
+Session / Participant Management
+        ↓
+File Lock Management
+        ↓
+Workspace Synchronization
 ```
 
-Server:
-```bash
-cd server
-npm install
-npm run dev
-```
+## Important Limitations
 
-Production server build:
-```bash
-cd server
-npm run build
-npm start
-```
-
-## Project Structure
-
-```
-src/
-server/
-test/
-package.json
-README.md
-```
-
-## Known Limitations
-
-### Save-Based Synchronization
-CoForge intentionally uses save-based synchronization rather than per-keystroke live synchronization.
-Unsaved changes remain local until the user saves.
-
-### First-Save-Wins
-If multiple collaborators edit the same document revision, the first valid save is accepted. Later stale saves are rejected.
-
-### Persistence
-Collaborative save behavior is currently designed around VS Code's save lifecycle.
-
-## Roadmap
-
-- improved collaborative persistence
-- improved stale-save conflict UX
-- user presence
-- cursor/selection indicators
-- authentication
-- workspace permissions
-- persistent collaboration sessions
-
-## Changelog
-
-### v1.0.8
-- Replaced unstable per-keystroke live text synchronization with save-based synchronization
-- Added first-save-wins document revision handling
-- Added stale-save rejection
-- Improved collaborative document consistency
-- Improved collaboration stability
-- Updated documentation with Start, Join and Stop workflows
-- Updated testing and synchronization documentation
+- **Save-Based**: Synchronization is save-based, not continuous live typing.
+- **Single Editor**: A file can only be actively edited by the collaborator holding its lock.
+- **View/Run**: Other collaborators can still view and run locked files.
+- **Server Dependency**: Collaboration depends on the configured CoForge server.
+- **Display Names**: Display-name presentation is supported but UI reliability may vary in the current build.
