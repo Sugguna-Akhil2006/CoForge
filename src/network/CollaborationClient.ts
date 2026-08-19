@@ -124,6 +124,9 @@ export class CollaborationClient extends EventEmitter {
             case MessageType.FILE_UNLOCKED:
                 this.emit('fileUnlocked', message);
                 break;
+            case MessageType.DOCUMENT_LOCKED:
+                this.emit('documentLocked', message);
+                break;
             case MessageType.ERROR:
                 this.handleError(message as ErrorMessage);
                 break;
@@ -219,7 +222,7 @@ export class CollaborationClient extends EventEmitter {
         });
     }
 
-    public async createSession(workspaceId: string, timeoutMs: number = 5000): Promise<string> {
+    public async createSession(workspaceId: string, displayName: string, timeoutMs: number = 5000): Promise<string> {
         return new Promise((resolve, reject) => {
             const messageId = crypto.randomUUID();
 
@@ -229,7 +232,8 @@ export class CollaborationClient extends EventEmitter {
                 timestamp: Date.now(),
                 type: MessageType.CREATE_SESSION,
                 payload: {
-                    workspaceId
+                    workspaceId,
+                    displayName
                 }
             };
 
@@ -260,7 +264,7 @@ export class CollaborationClient extends EventEmitter {
         });
     }
 
-    public async joinSession(sessionId: string, timeoutMs: number = 5000): Promise<void> {
+    public async joinSession(sessionId: string, displayName: string, timeoutMs: number = 5000): Promise<void> {
         this.log(`[CLIENT DEBUG] joinSession() start - requested sessionId: ${sessionId}`);
         if (!sessionId || sessionId.trim() === '') {
             throw new Error('Session ID cannot be empty.');
@@ -282,7 +286,8 @@ export class CollaborationClient extends EventEmitter {
                 timestamp: Date.now(),
                 type: MessageType.JOIN_SESSION,
                 payload: {
-                    sessionId
+                    sessionId,
+                    displayName
                 }
             };
 

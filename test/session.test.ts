@@ -133,7 +133,7 @@ describe('SessionManager', () => {
 
     it('should start session (workspace → connect → PING → PONG → ACTIVE)', async () => {
         const manager = new SessionManager(mockLogger, mockCreateClient);
-        const session = await manager.startSession();
+        const session = await manager.startSession('TestUser');
         
         expect(session.getState()).toBe(SessionState.ACTIVE);
         expect(manager.hasActiveSession()).toBe(true);
@@ -145,9 +145,9 @@ describe('SessionManager', () => {
 
     it('should prevent duplicate sessions (duplicate start)', async () => {
         const manager = new SessionManager(mockLogger, mockCreateClient);
-        await manager.startSession();
+        await manager.startSession('TestUser');
         
-        await expect(manager.startSession()).rejects.toThrow('An active session already exists for this workspace.');
+        await expect(manager.startSession('TestUser')).rejects.toThrow('An active session already exists for this workspace.');
     });
 
     it('should fail startup if server unavailable', async () => {
@@ -167,7 +167,7 @@ describe('SessionManager', () => {
         const failingMockCreateClient = () => mockClient as unknown as CollaborationClient;
         const failingManager = new SessionManager(mockLogger, failingMockCreateClient);
 
-        await expect(failingManager.startSession()).rejects.toThrow('Connection failed');
+        await expect(failingManager.startSession('TestUser')).rejects.toThrow('Connection failed');
         expect(failingManager.hasActiveSession()).toBe(false);
         expect(mockClient.dispose).toHaveBeenCalled();
     });
@@ -189,7 +189,7 @@ describe('SessionManager', () => {
         const failingMockCreateClient = () => mockClient as unknown as CollaborationClient;
         const failingManager = new SessionManager(mockLogger, failingMockCreateClient);
 
-        await expect(failingManager.startSession()).rejects.toThrow('PING request timed out');
+        await expect(failingManager.startSession('TestUser')).rejects.toThrow('PING request timed out');
         expect(failingManager.hasActiveSession()).toBe(false);
         expect(mockClient.dispose).toHaveBeenCalled();
     });
@@ -214,7 +214,7 @@ describe('SessionManager', () => {
         const manager = new SessionManager(mockLogger, slowMockCreateClient);
 
         // Start the session, which will block on connect()
-        const startPromise = manager.startSession();
+        const startPromise = manager.startSession('TestUser');
         
         // Concurrently stop the session, which clears manager.currentSession
         await manager.stopSession();
@@ -228,7 +228,7 @@ describe('SessionManager', () => {
 
     it('should stop session and clean up (Successful stop)', async () => {
         const manager = new SessionManager(mockLogger, mockCreateClient);
-        const session = await manager.startSession();
+        const session = await manager.startSession('TestUser');
         
         await manager.stopSession();
         expect(manager.hasActiveSession()).toBe(false);
@@ -249,13 +249,13 @@ describe('SessionManager', () => {
         const manager = new SessionManager(mockLogger, mockCreateClient);
         
         // Start and stop first session
-        const firstSession = await manager.startSession();
+        const firstSession = await manager.startSession('TestUser');
         await manager.stopSession();
         expect(manager.hasActiveSession()).toBe(false);
         expect(firstSession.getState()).toBe(SessionState.STOPPED);
         
         // Start second session
-        const secondSession = await manager.startSession();
+        const secondSession = await manager.startSession('TestUser');
         expect(manager.hasActiveSession()).toBe(true);
         expect(secondSession.getState()).toBe(SessionState.ACTIVE);
         expect(secondSession.getId().toString()).not.toBe(firstSession.getId().toString());
@@ -288,10 +288,10 @@ describe('SessionManager', () => {
 
         const manager = new SessionManager(mockLogger, retryMockCreateClient);
 
-        await expect(manager.startSession()).rejects.toThrow('Connection failed');
+        await expect(manager.startSession('TestUser')).rejects.toThrow('Connection failed');
         expect(manager.hasActiveSession()).toBe(false);
 
-        const session = await manager.startSession();
+        const session = await manager.startSession('TestUser');
         expect(session.getState()).toBe(SessionState.ACTIVE);
         expect(manager.hasActiveSession()).toBe(true);
     });
@@ -301,6 +301,6 @@ describe('SessionManager', () => {
         mockWorkspaceFolders.length = 0;
         
         const manager = new SessionManager(mockLogger, mockCreateClient);
-        await expect(manager.startSession()).rejects.toThrow('No workspace is currently open.');
+        await expect(manager.startSession('TestUser')).rejects.toThrow('No workspace is currently open.');
     });
 });

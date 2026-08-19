@@ -22,6 +22,7 @@ export interface CreateSessionMessage extends BaseMessage {
     type: MessageType.CREATE_SESSION;
     payload: {
         workspaceId: string;
+        displayName?: string;
     };
 }
 
@@ -37,6 +38,7 @@ export interface JoinSessionMessage extends BaseMessage {
     type: MessageType.JOIN_SESSION;
     payload: {
         sessionId: string;
+        displayName?: string;
     };
 }
 
@@ -224,6 +226,16 @@ export interface SaveRejectedMessage extends BaseMessage {
     };
 }
 
+export interface DocumentLockedMessage extends BaseMessage {
+    type: MessageType.DOCUMENT_LOCKED;
+    payload: {
+        sessionId: string;
+        documentId: string;
+        ownerId: string;
+        ownerName: string;
+    };
+}
+
 export type Message = 
     | PingMessage 
     | PongMessage 
@@ -248,4 +260,5 @@ export type Message =
     | FileLockHeartbeatMessage
     | SaveDocumentMessage
     | SaveRejectedMessage
+    | DocumentLockedMessage
     | ErrorMessage;

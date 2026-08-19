@@ -2,7 +2,7 @@
   "name": "coforge",
   "displayName": "CoForge",
   "description": "Real-time collaborative workspace synchronization for Visual Studio Code.",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "publisher": "coforge",
   "icon": "icon.png",
   "repository": {
@@ -34,6 +34,18 @@
       {
         "command": "coforge.requestWorkspaceSnapshot",
         "title": "CoForge: Request Workspace Snapshot"
+      },
+      {
+        "command": "coforge.requestFileEdit",
+        "title": "CoForge: Request File Edit"
+      },
+      {
+        "command": "coforge.releaseFileEdit",
+        "title": "CoForge: Release File Edit"
+      },
+      {
+        "command": "coforge.showFileLockStatus",
+        "title": "CoForge: Show File Lock Status"
       }
     ],
     "configuration": {

@@ -20,6 +20,7 @@ class CollaborationServer {
     private sessionRegistry: SessionRegistry;
     // Map to track which client requested a snapshot (messageId -> WebSocket)
     private readonly snapshotRequests = new Map<string, WebSocket>();
+    private heartbeatTimer?: NodeJS.Timeout;
 
     constructor() {
         this.sessionRegistry = new SessionRegistry();
@@ -31,6 +32,23 @@ class CollaborationServer {
 
         this.wss = new WebSocketServer({ server: this.server });
         this.setupEventHandlers();
+        
+        // Clean stale locks every 30 seconds
+        this.heartbeatTimer = setInterval(() => {
+            const sessions = this.sessionRegistry.getAllSessions();
+            for (const session of sessions) {
+                const releasedPaths = session.cleanStaleLocks(60000); // 60 seconds timeout
+                for (const path of releasedPaths) {
+                    this.broadcastToSession(session, {
+                        messageId: crypto.randomUUID(),
+                        protocolVersion: 1,
+                        timestamp: Date.now(),
+                        type: MessageType.FILE_UNLOCKED,
+                        payload: { sessionId: session.sessionId, path }
+                    });
+                }
+            }
+        }, 30000);
     }
 
     private setupEventHandlers(): void {
@@ -165,6 +183,11 @@ class CollaborationServer {
             const clientId = this.sessionRegistry.addClient(session.sessionId, ws);
             session.setHost(ws);
 
+            let displayName = message.payload.displayName || 'Anonymous';
+            // Simple sanitization
+            displayName = displayName.replace(/</g, '&lt;').replace(/>/g, '&gt;').substring(0, 32);
+            session.setClientName(clientId, displayName);
+
             console.log(`[INFO] Created session ${session.sessionId} for workspace ${workspaceId}. Host set. clientId: ${clientId}`);
             console.log(`[SESSION DEBUG] EXACT SESSION ID RETURNED TO CLIENT: ${session.sessionId}`);
 
@@ -208,6 +231,14 @@ class CollaborationServer {
             }
 
             const clientId = this.sessionRegistry.addClient(sessionId, ws);
+            const session = this.sessionRegistry.getSession(sessionId);
+
+            let displayName = message.payload.displayName || 'Anonymous';
+            // Simple sanitization
+            displayName = displayName.replace(/</g, '&lt;').replace(/>/g, '&gt;').substring(0, 32);
+            if (session) {
+                session.setClientName(clientId, displayName);
+            }
 
             console.log(`[INFO] Client joined session ${sessionId} with clientId ${clientId}.`);
 
@@ -335,7 +366,8 @@ class CollaborationServer {
         const clientId = session.getClientId(ws);
         if (!clientId) return;
 
-        const lock = session.acquireLock(path, clientId, `User-${clientId.substring(0, 4)}`);
+        const ownerName = session.getClientName(clientId);
+        const lock = session.acquireLock(path, clientId, ownerName);
         
         if (lock && lock.ownerClientId === clientId) {
             const granted: Message = {
@@ -489,6 +521,29 @@ class CollaborationServer {
             const state = session.getFileState(path);
             const currentRev = state ? state.revision : 0;
 
+            const activeLock = session.getLock(path);
+            if (activeLock && activeLock.ownerClientId !== clientId) {
+                // File is locked by someone else! Reject save.
+                const lockOwnerName = activeLock.ownerName;
+                const lockOwnerId = activeLock.ownerClientId;
+                console.log(`[INFO] SAVE_DOCUMENT rejected for ${path} because it is locked by ${lockOwnerName} (${lockOwnerId})`);
+                
+                const documentLockedMsg: Message = {
+                    messageId: crypto.randomUUID(),
+                    protocolVersion: message.protocolVersion,
+                    timestamp: Date.now(),
+                    type: MessageType.DOCUMENT_LOCKED,
+                    payload: {
+                        sessionId,
+                        documentId: path,
+                        ownerClientId: lockOwnerId,
+                        ownerName: lockOwnerName
+                    }
+                };
+                this.sendMessage(ws, documentLockedMsg);
+                return;
+            }
+
             if (baseRevision === currentRev) {
                 // Accept save
                 const nextRev = session.incrementGlobalRevision();
@@ -605,18 +660,40 @@ class CollaborationServer {
     public start(port: number = PORT): Promise<void> {
         return new Promise((resolve) => {
             this.server.listen(port, () => {
-                console.log(`[INFO] CoForge Collaboration Server is listening on port ${port}`);
+                const address = this.server.address();
+                const actualPort = typeof address === 'object' && address !== null ? address.port : port;
+                console.log(`[INFO] CoForge Collaboration Server is listening on port ${actualPort}`);
                 resolve();
             });
         });
     }
 
+    public getPort(): number {
+        const address = this.server.address();
+        if (typeof address === 'object' && address !== null) {
+            return address.port;
+        }
+        return PORT;
+    }
+
+    private isStopped = false;
+
     public stop(): Promise<void> {
+        if (this.isStopped) {
+            return Promise.resolve();
+        }
+        this.isStopped = true;
+
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = undefined;
+        }
+
         return new Promise((resolve) => {
             console.log('[INFO] Shutting down Collaboration Server...');
             for (const client of this.wss.clients) {
                 this.sessionRegistry.removeClientFromAnySession(client);
-                client.close();
+                client.terminate(); // Terminate instead of close for immediate test cleanup
             }
             this.wss.close(() => {
                 this.server.close(() => {

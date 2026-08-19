@@ -10,9 +10,9 @@ export class CommandRegistry {
 
     public registerAll(): void {
         const sessionManager = new SessionManager({ log: (msg) => console.log(`CoForge: ${msg}`) });
-        const startCollaborationCmd = new StartCollaborationCommand(sessionManager);
+        const startCollaborationCmd = new StartCollaborationCommand(sessionManager, this.context);
         const stopCollaborationCmd = new StopCollaborationCommand(sessionManager);
-        const joinCollaborationCmd = new JoinCollaborationCommand(sessionManager);
+        const joinCollaborationCmd = new JoinCollaborationCommand(sessionManager, this.context);
         const requestSnapshotCmd = new RequestWorkspaceSnapshotCommand(sessionManager);
         
         this.context.subscriptions.push(
@@ -27,6 +27,37 @@ export class CommandRegistry {
             }),
             vscode.commands.registerCommand(RequestWorkspaceSnapshotCommand.ID, () => {
                 return requestSnapshotCmd.execute();
+            }),
+            vscode.commands.registerCommand('coforge.requestFileEdit', () => {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor || editor.document.uri.scheme !== 'file') return;
+                const sync = sessionManager.getSyncService();
+                const client = sessionManager.getClient();
+                const session = sessionManager.getCurrentSession();
+                if (sync && client && session) {
+                    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+                    client.requestFileLock(session.getId().toString(), relativePath);
+                    vscode.window.showInformationMessage(`Requested edit lock for ${relativePath}`);
+                } else {
+                    vscode.window.showErrorMessage('No active collaboration session.');
+                }
+            }),
+            vscode.commands.registerCommand('coforge.releaseFileEdit', () => {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor || editor.document.uri.scheme !== 'file') return;
+                const sync = sessionManager.getSyncService();
+                const client = sessionManager.getClient();
+                const session = sessionManager.getCurrentSession();
+                if (sync && client && session) {
+                    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
+                    client.releaseFileLock(session.getId().toString(), relativePath);
+                    vscode.window.showInformationMessage(`Released edit lock for ${relativePath}`);
+                } else {
+                    vscode.window.showErrorMessage('No active collaboration session.');
+                }
+            }),
+            vscode.commands.registerCommand('coforge.showFileLockStatus', () => {
+                vscode.window.showInformationMessage('Lock status is displayed in the status bar for the active editor.');
             })
         );
     }

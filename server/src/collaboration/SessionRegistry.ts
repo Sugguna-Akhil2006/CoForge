@@ -40,6 +40,10 @@ export class SessionRegistry {
         return session;
     }
 
+    public getAllSessions(): Session[] {
+        return Array.from(this.sessions.values());
+    }
+
     public hasSession(sessionId: string): boolean {
         return this.sessions.has(sessionId);
     }

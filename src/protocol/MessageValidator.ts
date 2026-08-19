@@ -176,26 +176,17 @@ export class MessageValidator {
                        typeof payload.ownerClientId === 'string' && payload.ownerClientId.trim() !== '' &&
                        typeof payload.ownerName === 'string' &&
                        typeof payload.reason === 'string';
-            case MessageType.JOIN_DOCUMENT:
-            case MessageType.DOCUMENT_LEAVE:
-                return this.isObject(payload) &&
-                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
-                       typeof payload.path === 'string' && payload.path.trim() !== '';
-            case MessageType.DOCUMENT_SYNC_REQUEST:
-                return this.isObject(payload) &&
-                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
-                       typeof payload.path === 'string' && payload.path.trim() !== '' &&
-                       typeof payload.stateVector === 'string';
-            case MessageType.DOCUMENT_SYNC_RESPONSE:
-            case MessageType.DOCUMENT_UPDATE:
-                return this.isObject(payload) &&
-                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
-                       typeof payload.path === 'string' && payload.path.trim() !== '' &&
-                       typeof payload.update === 'string';
+
             case MessageType.ERROR:
                 return this.isObject(payload) && 
                        typeof payload.code === 'string' && payload.code.trim() !== '' &&
                        typeof payload.message === 'string' && payload.message.trim() !== '';
+            case MessageType.DOCUMENT_LOCKED:
+                return this.isObject(payload) &&
+                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
+                       typeof payload.documentId === 'string' && payload.documentId.trim() !== '' &&
+                       typeof payload.ownerClientId === 'string' && payload.ownerClientId.trim() !== '' &&
+                       typeof payload.ownerName === 'string';
             default:
                 return false;
         }

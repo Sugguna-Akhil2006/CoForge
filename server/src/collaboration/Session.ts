@@ -24,6 +24,7 @@ export class Session {
     private fileStates: Map<string, FileState>;
     private activeLocks: Map<string, FileLock>;
     private documents: Map<string, string>;
+    private clientNames: Map<string, string>;
     public globalRevision: number = 0;
 
     constructor(sessionId: string, workspaceId: string) {
@@ -34,6 +35,15 @@ export class Session {
         this.fileStates = new Map<string, FileState>();
         this.activeLocks = new Map<string, FileLock>();
         this.documents = new Map<string, string>();
+        this.clientNames = new Map<string, string>();
+    }
+
+    public setClientName(clientId: string, name: string): void {
+        this.clientNames.set(clientId, name);
+    }
+
+    public getClientName(clientId: string): string {
+        return this.clientNames.get(clientId) || `User-${clientId.substring(0, 4)}`;
     }
 
     public getFileState(path: string): FileState | undefined {
@@ -162,6 +172,7 @@ export class Session {
         for (const [clientId, clientWs] of this.clients.entries()) {
             if (clientWs === ws) {
                 this.clients.delete(clientId);
+                this.clientNames.delete(clientId);
                 return clientId;
             }
         }

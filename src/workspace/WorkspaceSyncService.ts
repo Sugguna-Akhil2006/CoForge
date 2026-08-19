@@ -36,6 +36,7 @@ export class WorkspaceSyncService {
     private readonly boundOnLockGranted: (msg: Message) => void;
     private readonly boundOnLockDenied: (msg: Message) => void;
     private readonly boundOnUnlocked: (msg: Message) => void;
+    private readonly boundOnDocumentLocked: (msg: Message) => void;
 
     private lockHeartbeatTimer: NodeJS.Timeout | null = null;
     private statusBarItem: vscode.StatusBarItem;
@@ -54,6 +55,7 @@ export class WorkspaceSyncService {
         this.boundOnLockGranted = this.onLockGranted.bind(this);
         this.boundOnLockDenied = this.onLockDenied.bind(this);
         this.boundOnUnlocked = this.onUnlocked.bind(this);
+        this.boundOnDocumentLocked = this.onDocumentLocked.bind(this);
 
         const alignment = vscode.StatusBarAlignment ? vscode.StatusBarAlignment.Right : 2;
         this.statusBarItem = vscode.window.createStatusBarItem(alignment, 100);
@@ -95,7 +97,73 @@ export class WorkspaceSyncService {
             await this.handleLocalFileEvent(uri, rootPath, 'DELETE');
         }));
 
-        // Removed manual onDidChangeTextDocument for FILE_EDIT - DocumentManager handles it now.
+        this.disposables.push(vscode.workspace.onDidChangeTextDocument(async (event) => {
+            if (event.document.uri.scheme !== 'file') return;
+            const relativePath = vscode.workspace.asRelativePath(event.document.uri, false).replace(/\\/g, '/');
+            
+            // Ignore if we are applying remote changes
+            if (this.applyingRemoteChanges.has(relativePath)) return;
+            
+            // Check if this document is actually the active one being typed in.
+            // If it's a background update (e.g., delayed fs.writeFile from remote sync), we MUST NOT trigger an undo, 
+            // as executeCommand('undo') applies to the active editor globally, which causes the workspace-read-only bug!
+            const activeEditor = vscode.window.activeTextEditor;
+            const isActiveDocument = activeEditor && activeEditor.document.uri.toString() === event.document.uri.toString();
+            
+            const state = this.getFileState(relativePath);
+            
+            if (state.lockedByClientId && state.lockedByClientId !== this.collaborationClient.clientId) {
+                if (isActiveDocument) {
+                    // Someone else owns the lock and the user is typing here! Block edit by undoing immediately.
+                    vscode.commands.executeCommand('undo');
+                    vscode.window.showWarningMessage(`🔒 ${state.lockedByName} is currently editing this file. You can view and run this file, but editing is temporarily locked.`);
+                } else {
+                    // It's a background change (e.g., remote sync completing). Do nothing.
+                    this.log(`[DEBUG] Ignoring background change on locked file: ${relativePath}`);
+                }
+            } else if (!state.lockedByClientId && isActiveDocument) {
+                // Not locked, and user is typing in it. Request lock!
+                this.collaborationClient.requestFileLock(this.sessionId, relativePath);
+            }
+        }));
+
+        this.disposables.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+            const currentActivePath = editor && editor.document.uri.scheme === 'file' 
+                ? vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/')
+                : undefined;
+            
+            // Release locks for any files we own that are no longer the active editor
+            for (const [relativePath, state] of this.fileStates.entries()) {
+                if (state.lockedByClientId === this.collaborationClient.clientId && relativePath !== currentActivePath) {
+                    this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
+                }
+            }
+
+            if (currentActivePath) {
+                const state = this.getFileState(currentActivePath);
+                
+                // Request lock for the newly active file if not already locked
+                if (!state.lockedByClientId) {
+                    this.collaborationClient.requestFileLock(this.sessionId, currentActivePath);
+                }
+
+                if (state.lockedByClientId && state.lockedByClientId !== this.collaborationClient.clientId) {
+                    this.statusBarItem.text = `$(lock) ${state.lockedByName} is editing this file`;
+                    this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+                    this.statusBarItem.show();
+                } else if (!state.lockedByClientId) {
+                    this.statusBarItem.text = `$(circle-filled) ${path.basename(currentActivePath)} available`;
+                    this.statusBarItem.backgroundColor = undefined;
+                    this.statusBarItem.show();
+                } else {
+                    this.statusBarItem.text = `$(edit) You are editing ${path.basename(currentActivePath)}`;
+                    this.statusBarItem.backgroundColor = undefined;
+                    this.statusBarItem.show();
+                }
+            } else {
+                this.statusBarItem.hide();
+            }
+        }));
 
         this.disposables.push(vscode.workspace.onDidRenameFiles(async (event) => {
             for (const file of event.files) {
@@ -113,6 +181,7 @@ export class WorkspaceSyncService {
         this.collaborationClient.on('fileLockGranted', this.boundOnLockGranted);
         this.collaborationClient.on('fileLockDenied', this.boundOnLockDenied);
         this.collaborationClient.on('fileUnlocked', this.boundOnUnlocked);
+        this.collaborationClient.on('documentLocked', this.boundOnDocumentLocked);
 
         // Active editor changes -> request lock - Disable rigid locking for now to allow collaborative edit
         // this.disposables.push(vscode.window.onDidChangeActiveTextEditor(editor => {
@@ -120,12 +189,15 @@ export class WorkspaceSyncService {
         // }));
 
         // Document closed -> release lock
-        // this.disposables.push(vscode.workspace.onDidCloseTextDocument(doc => {
-        //     if (doc.uri.scheme === 'file') {
-        //         const relativePath = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, '/');
-        //         this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
-        //     }
-        // }));
+        this.disposables.push(vscode.workspace.onDidCloseTextDocument(doc => {
+            if (doc.uri.scheme === 'file') {
+                const relativePath = vscode.workspace.asRelativePath(doc.uri, false).replace(/\\/g, '/');
+                const state = this.getFileState(relativePath);
+                if (state.lockedByClientId === this.collaborationClient.clientId) {
+                    this.collaborationClient.releaseFileLock(this.sessionId, relativePath);
+                }
+            }
+        }));
 
         this.startLockHeartbeat();
 
@@ -165,25 +237,7 @@ export class WorkspaceSyncService {
         }, 10000);
     }
 
-    private handleActiveEditorChange(editor: vscode.TextEditor | undefined) {
-        if (!editor || editor.document.uri.scheme !== 'file') {
-            this.statusBarItem.hide();
-            return;
-        }
-
-        const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/');
-        
-        // Check current lock state
-        const state = this.getFileState(relativePath);
-        if (state.lockedByClientId && state.lockedByClientId !== this.collaborationClient.clientId) {
-            this.statusBarItem.text = `$(lock) Locked by ${state.lockedByName}`;
-            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            this.statusBarItem.show();
-        } else {
-            this.collaborationClient.requestFileLock(this.sessionId, relativePath);
-            this.statusBarItem.hide();
-        }
-    }
+    // handleActiveEditorChange is removed
 
     private async handleLocalFileRenamed(oldUri: vscode.Uri, newUri: vscode.Uri, rootPath: string): Promise<void> {
         const oldRelativePath = vscode.workspace.asRelativePath(oldUri, false).replace(/\\/g, '/');
@@ -397,8 +451,24 @@ export class WorkspaceSyncService {
 
         const editor = vscode.window.activeTextEditor;
         if (editor && vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/') === payload.path) {
-            // Attempt to acquire lock again
-            this.collaborationClient.requestFileLock(this.sessionId, payload.path);
+            this.statusBarItem.text = `$(circle-filled) ${path.basename(payload.path)} available`;
+            this.statusBarItem.backgroundColor = undefined;
+            this.statusBarItem.show();
+        }
+    }
+
+    private onDocumentLocked(message: Message): void {
+        const payload = message.payload as any;
+        const state = this.getFileState(payload.documentId);
+        state.lockedByClientId = payload.ownerClientId;
+        state.lockedByName = payload.ownerName;
+
+        const editor = vscode.window.activeTextEditor;
+        if (editor && vscode.workspace.asRelativePath(editor.document.uri, false).replace(/\\/g, '/') === payload.documentId) {
+            this.statusBarItem.text = `$(lock) ${payload.ownerName} is editing this file`;
+            this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            this.statusBarItem.show();
+            vscode.window.showWarningMessage(`🔒 ${payload.ownerName} is currently editing this file. Save rejected.`);
         }
     }
 
@@ -578,5 +648,6 @@ export class WorkspaceSyncService {
         this.collaborationClient.removeListener('fileDeleted', this.boundOnRemoteFileDeleted);
         this.collaborationClient.removeListener('fileRenamed', this.boundOnRemoteFileRenamed);
         this.collaborationClient.removeListener('saveRejected', this.boundOnSaveRejected);
+        this.collaborationClient.removeListener('documentLocked', this.boundOnDocumentLocked);
     }
 }

@@ -24,10 +24,11 @@ export class SessionManager {
     // Reconnection state
     private role: 'host' | 'guest' | undefined;
     private activeSessionId: string | undefined;
-    private isReconnecting = false;
-
+    private isReconnecting: boolean = false;
+    private reconnectAttempt: number = 0;
     private static readonly MAX_RECONNECT_ATTEMPTS = 5;
     private static readonly BASE_RECONNECT_DELAY_MS = 1000;
+    private currentDisplayName: string = 'Anonymous';
 
     constructor(
         private readonly logger?: ILogger,
@@ -61,11 +62,12 @@ export class SessionManager {
     /**
      * Starts a new collaboration session.
      */
-    public async startSession(): Promise<CollaborationSession> {
+    public async startSession(displayName: string): Promise<CollaborationSession> {
         if (this.hasActiveSession()) {
             throw new Error('An active session already exists for this workspace.');
         }
 
+        this.currentDisplayName = displayName;
         const workspaceId = this.getWorkspaceIdentity();
         this.currentSession = new CollaborationSession(workspaceId);
         
@@ -100,7 +102,7 @@ export class SessionManager {
             await this.collaborationClient.connect(this.serverUrl);
             await this.collaborationClient.ping(5000);
             
-            const serverSessionId = await this.collaborationClient.createSession(workspaceId, 5000);
+            const serverSessionId = await this.collaborationClient.createSession(workspaceId, displayName, 5000);
             this.log(`[SESSION DEBUG] START SESSION - server returned session ID: ${serverSessionId}`);
             this.currentSession.setId(SessionId.fromString(serverSessionId));
             this.log(`[SESSION DEBUG] START SESSION - local session ID after setId(): ${this.currentSession.getId().toString()}`);
@@ -138,13 +140,14 @@ export class SessionManager {
     /**
      * Joins an existing collaboration session.
      */
-    public async joinSession(sessionId: string): Promise<void> {
+    public async joinSession(sessionId: string, displayName: string): Promise<void> {
         this.log(`[SESSION DEBUG] JOIN SESSION - requested session ID: ${sessionId}`);
         this.log(`[CoForge DEBUG] JOIN server URL = ${this.serverUrl}`);
         if (this.hasActiveSession()) {
             throw new Error('An active session already exists for this workspace.');
         }
 
+        this.currentDisplayName = displayName;
         const clientExisted = !!this.collaborationClient;
         this.log(`[SESSION DEBUG] JOIN SESSION - whether client existed: ${clientExisted}`);
 
@@ -157,7 +160,7 @@ export class SessionManager {
         this.log(`[SESSION DEBUG] JOIN SESSION - whether connect() was called: ${!clientWasConnected}`);
 
         try {
-            await this.collaborationClient.joinSession(sessionId);
+            await this.collaborationClient.joinSession(sessionId, displayName);
             this.log(`[SESSION DEBUG] JOIN SESSION - result of joinSession(): SUCCESS`);
             
             const workspaceId = this.getWorkspaceIdentity();
@@ -279,7 +282,7 @@ export class SessionManager {
                 this.log('[INFO] Collaboration reconnect successful.');
 
                 // Rejoin the same session
-                await this.collaborationClient.joinSession(sessionId);
+                await this.collaborationClient.joinSession(sessionId, this.currentDisplayName);
                 this.log(`[INFO] Rejoined session ${sessionId}.`);
 
                 // Request and apply workspace snapshot for resync
@@ -371,6 +374,14 @@ export class SessionManager {
      */
     public getCurrentSession(): CollaborationSession | undefined {
         return this.currentSession;
+    }
+
+    public getSyncService(): WorkspaceSyncService | undefined {
+        return this.syncService;
+    }
+
+    public getClient(): CollaborationClient | undefined {
+        return this.collaborationClient;
     }
 
     /**

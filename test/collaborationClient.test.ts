@@ -172,7 +172,7 @@ describe('CollaborationClient', () => {
             sentMessage = msg;
         });
 
-        const joinPromise = client.joinSession('session-123', 1000);
+        const joinPromise = client.joinSession('session-123', 'TestUser', 1000);
         
         await new Promise(r => setImmediate(r));
         
@@ -204,7 +204,7 @@ describe('CollaborationClient', () => {
             sentMessage = msg;
         });
 
-        const joinPromise = client.joinSession('session-123', 1000);
+        const joinPromise = client.joinSession('session-123', 'TestUser', 1000);
         await new Promise(r => setImmediate(r));
 
         const errorMessage = {
@@ -226,26 +226,24 @@ describe('CollaborationClient', () => {
 
     it('should reject joinSession on timeout', async () => {
         jest.useFakeTimers();
-        const joinPromise = client.joinSession('session-123', 1000);
+        const joinPromise = client.joinSession('session-123', 'GuestName', 1000);
         
-        await Promise.resolve();
-        jest.advanceTimersByTime(1000);
+        // Fast-forward time
+        jest.advanceTimersByTime(1500);
         
         await expect(joinPromise).rejects.toThrow('JOIN_SESSION request timed out');
         jest.useRealTimers();
     });
 
     it('should reject empty session ID', async () => {
-        await expect(client.joinSession('')).rejects.toThrow('Session ID cannot be empty');
-        await expect(client.joinSession('   ')).rejects.toThrow('Session ID cannot be empty');
+        await expect(client.joinSession('', 'GuestName')).rejects.toThrow('Session ID cannot be empty');
+        await expect(client.joinSession('   ', 'GuestName')).rejects.toThrow('Session ID cannot be empty');
     });
 
     it('should not resolve joinSession on unrelated SESSION_JOINED', async () => {
         jest.useFakeTimers();
         
-        const joinPromise = client.joinSession('session-123', 1000);
-        await Promise.resolve();
-
+        const joinPromise = client.joinSession('session-123', 'GuestName', 1000);
         const unrelatedJoinedMessage = {
             messageId: 'joined-other',
             correlationId: 'some-other-correlation-id',

@@ -192,6 +192,12 @@ export class MessageValidator {
                 return this.isObject(payload) && 
                        typeof payload.code === 'string' && payload.code.trim() !== '' &&
                        typeof payload.message === 'string' && payload.message.trim() !== '';
+            case MessageType.DOCUMENT_LOCKED:
+                return this.isObject(payload) &&
+                       typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
+                       typeof payload.documentId === 'string' && payload.documentId.trim() !== '' &&
+                       typeof payload.ownerClientId === 'string' && payload.ownerClientId.trim() !== '' &&
+                       typeof payload.ownerName === 'string';
             default:
                 return false;
         }
