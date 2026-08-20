@@ -231,6 +231,7 @@ export interface DocumentLockedMessage extends BaseMessage {
     payload: {
         sessionId: string;
         documentId: string;
+        ownerClientId: string;
         ownerId: string;
         ownerName: string;
     };

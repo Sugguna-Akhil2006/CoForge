@@ -537,6 +537,7 @@ class CollaborationServer {
                         sessionId,
                         documentId: path,
                         ownerClientId: lockOwnerId,
+                        ownerId: lockOwnerId,
                         ownerName: lockOwnerName
                     }
                 };

@@ -186,6 +186,7 @@ export class MessageValidator {
                        typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' &&
                        typeof payload.documentId === 'string' && payload.documentId.trim() !== '' &&
                        typeof payload.ownerClientId === 'string' && payload.ownerClientId.trim() !== '' &&
+                       typeof payload.ownerId === 'string' && payload.ownerId.trim() !== '' &&
                        typeof payload.ownerName === 'string';
             default:
                 return false;
